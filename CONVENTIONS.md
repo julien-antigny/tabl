@@ -1,41 +1,41 @@
 # Conventions
 
-## Organisation
+## Layout
 
 ```
-back/            le moteur
-  tabl.zig       API publique : seul point d'entrée pour le front
-  core/          domaine et ports, ne dépend de rien
-  app/           cas d'usage, dépend de core
-  infra/         adaptateurs (csv, cache, fichiers…), dépend de core
+back/            the engine
+  tabl.zig       public API: the only entry point for the front
+  core/          domain and ports, depends on nothing
+  app/           use cases, depends on core
+  infra/         adapters (csv, cache, files…), depends on core
 front/
-  cli/           la ligne de commande
+  cli/           the command line
 ```
 
-- `core` ne dépend ni d'`app` ni d'`infra`. `app` ne dépend pas d'`infra`.
-- Les adaptateurs ne sont assemblés qu'à un seul endroit, la racine de composition.
-- Le front ne connaît que l'API publique du moteur.
+- `core` depends on neither `app` nor `infra`. `app` does not depend on `infra`.
+- Adapters are wired together in a single place, the composition root.
+- The front only knows the engine's public API.
 
-## Vocabulaire
+## Vocabulary
 
-- **Port** : interface déclarée dans `core`, implémentée dans `infra`.
-- **Adaptateur** : implémentation d'un port, liée à une technique (mmap, CSV, JSON…).
-- **Service** : logique du `core` ou de l'`app`, sans technique.
+- **Port**: an interface declared in `core`, implemented in `infra`.
+- **Adapter**: an implementation of a port, tied to a technology (mmap, CSV, JSON…).
+- **Service**: logic in `core` or `app`, free of any technology.
 
 ## Ports
 
-- Chaque port documente son rôle et son contrat : ce que l'appelant peut attendre.
-- Un port ne parle jamais d'un détail d'infra. Une méthode qu'on ne peut pas décrire sans parler d'infra n'a rien à faire dans le port.
-- Le contrat se vérifie par un test de contrat écrit dans `core`, que chaque adaptateur doit passer.
-- Une interface seulement quand il y a plusieurs implémentations ou un besoin de doublure en test. Sinon, un type concret.
+- Every port documents its role and its contract: what the caller can rely on.
+- A port never mentions an infrastructure detail. A method that cannot be described without talking about infrastructure does not belong in the port.
+- The contract is checked by a contract test written in `core`, which every adapter must pass.
+- Use an interface only when there are several implementations or a test double is needed. Otherwise, use a concrete type.
 
 ## Construction
 
-- Construire un objet ne fait aucune entrée/sortie.
-- Un objet adossé à un fichier le lit à la demande, dans ses méthodes, qui peuvent échouer. Pas d'étape d'initialisation à ne pas oublier.
+- Constructing an object performs no I/O.
+- An object backed by a file reads it on demand, in its methods, which may fail. No initialization step that could be forgotten.
 
-## Erreurs
+## Errors
 
-- Chaque couche a ses propres erreurs.
-- Une couche ne laisse pas passer l'erreur d'une autre : elle la traduit dans la sienne, en gardant la cause.
-- Les messages pour l'utilisateur vivent dans le front.
+- Each layer has its own errors.
+- A layer never lets another layer's error through: it translates it into its own, keeping the cause.
+- User-facing messages live in the front.

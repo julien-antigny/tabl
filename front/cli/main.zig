@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const usage =
-    \\usage : tabl <commande> [arguments]
+    \\usage: tabl <command> [arguments]
     \\
 ;
 
@@ -13,5 +13,5 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test "usage names the program" {
-    try std.testing.expect(std.mem.startsWith(u8, usage, "usage : tabl"));
+    try std.testing.expect(std.mem.startsWith(u8, usage, "usage: tabl"));
 }
