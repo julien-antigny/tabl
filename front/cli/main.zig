@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const report = @import("report.zig");
+
 const usage =
     \\usage: tabl <command> [arguments]
     \\
