@@ -1,8 +1,5 @@
 const std = @import("std");
-
-pub const Error = error{
-    UnterminatedQuote,
-};
+const CsvError = @import("errors.zig").CsvError;
 
 pub const Record = struct {
     text: []const u8,
@@ -14,7 +11,7 @@ pub const Records = struct {
     position: usize = 0,
     line: u64 = 1,
 
-    pub fn next(self: *Records) Error!?Record {
+    pub fn next(self: *Records) CsvError!?Record {
         while (self.position < self.bytes.len and
             isLineEnd(self.bytes[self.position]))
         {
