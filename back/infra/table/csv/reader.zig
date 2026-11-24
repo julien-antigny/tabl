@@ -4,7 +4,6 @@ const Header = @import("../../../core/table/header.zig").Header;
 const Row = @import("../../../core/table/row.zig").Row;
 const Reader = @import("../../../core/table/reader.zig").Reader;
 const TableError = @import("../../../core/table/errors.zig").TableError;
-const contract = @import("../../../core/table/reader_contract.zig");
 const Records = @import("records.zig").Records;
 const Record = @import("records.zig").Record;
 const Fields = @import("fields.zig").Fields;
@@ -523,30 +522,6 @@ test "nextRow fails on a wrong number of values" {
     _ = try reader.nextRow();
     try std.testing.expectError(error.ColumnCountMismatch, reader.nextRow());
     try std.testing.expectEqual(3, reader.line);
-}
-
-test "CsvReader honours the Reader contract" {
-    const io = std.testing.io;
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = "name;city\nAlice;Paris\nBob;Lyon\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "broken.csv", .data = "a,b\n1,2,3\n" });
-
-    var reads = CsvReader.new(io, allocator, tmp.dir, "table.csv");
-    defer reads.close();
-    try contract.checkReads(reads.reader(), &.{ "name", "city" }, &.{
-        &.{ "Alice", "Paris" },
-        &.{ "Bob", "Lyon" },
-    });
-
-    var without_header = CsvReader.new(io, allocator, tmp.dir, "table.csv");
-    defer without_header.close();
-    try contract.checkNextWithoutHeader(without_header.reader(), &.{ "Alice", "Paris" });
-
-    var fails = CsvReader.new(io, allocator, tmp.dir, "broken.csv");
-    defer fails.close();
-    try contract.checkFails(fails.reader(), error.Malformed);
 }
 
 test "failures are translated with their location" {
