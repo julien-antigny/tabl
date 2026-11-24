@@ -18,7 +18,7 @@ front/
 
 ## Vocabulary
 
-- **Port**: an interface declared in `core`, implemented in `infra`.
+- **Port**: an interface declared in `core`. Implemented in `infra` when the implementation performs I/O (files, mmap, network…), otherwise directly in `core`.
 - **Adapter**: an implementation of a port, tied to a technology (mmap, CSV, JSON…).
 - **Service**: logic in `core` or `app`, free of any technology.
 
@@ -26,7 +26,6 @@ front/
 
 - Every port documents its role and its contract: what the caller can rely on.
 - A port never mentions an infrastructure detail. A method that cannot be described without talking about infrastructure does not belong in the port.
-- The contract is checked by a contract test written in `core`, which every adapter must pass.
 - Use an interface only when there are several implementations or a test double is needed. Otherwise, use a concrete type.
 
 ## Construction
@@ -36,6 +35,7 @@ front/
 
 ## Errors
 
-- Each layer has its own errors.
-- A layer never lets another layer's error through: it translates it into its own, keeping the cause.
+- An error is translated when it crosses an abstraction boundary (e.g. CSV details become `Malformed`), keeping the cause.
+- An outer layer may reuse the errors of an inner one when it has nothing to add; an inner layer never uses the errors of an outer one.
+- How errors are split or grouped follows what a caller needs to tell apart, not guesses about the future.
 - User-facing messages live in the front.
