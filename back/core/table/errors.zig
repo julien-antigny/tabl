@@ -5,4 +5,6 @@ pub const TableError = error{
     OutOfMemory,
     Unwritable,
     Unsupported,
+    ColumnNotFoud,
+    RowNotValid,
 };
