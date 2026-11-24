@@ -1,14 +1,12 @@
 const std = @import("std");
 pub const diagnostic = @import("core/diagnostic.zig");
 pub const Scan = @import("app/scan/scan.zig").Scan;
+pub const Import = @import("app/import/import.zig").Import;
+pub const Page = @import("app/page/page.zig").Page;
 pub const CsvReader = @import("infra/table/csv/reader.zig").CsvReader;
+pub const CacheWriter = @import("infra/table/cache/writer.zig").CacheWriter;
+pub const CacheTable = @import("infra/table/cache/table.zig").CacheTable;
 
 test {
     std.testing.refAllDecls(@This());
-    _ = @import("infra/table/cache/meta.zig");
-    _ = @import("infra/table/cache/column.zig");
-    _ = @import("infra/table/cache/writer.zig");
-    _ = @import("infra/table/cache/table.zig");
-    _ = @import("app/import/import.zig");
-    _ = @import("app/page/page.zig");
 }
