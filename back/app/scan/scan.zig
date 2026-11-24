@@ -36,7 +36,8 @@ pub const Scan = struct {
 };
 
 fn fail(err: TableError, diagnostics: *Diagnostics) ScanError {
-    const scan_error = errors.fromTable(err);
+    const scan_error = err;
+
     diagnostics.push(.{
         .layer = .app,
         .kind = scan_error,
