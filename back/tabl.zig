@@ -9,4 +9,6 @@ test {
     _ = @import("infra/table/cache/column.zig");
     _ = @import("infra/table/cache/writer.zig");
     _ = @import("infra/table/cache/table.zig");
+    _ = @import("app/import/import.zig");
+    _ = @import("app/page/page.zig");
 }
