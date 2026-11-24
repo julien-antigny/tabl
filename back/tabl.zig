@@ -6,4 +6,6 @@ pub const CsvReader = @import("infra/table/csv/reader.zig").CsvReader;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("infra/table/cache/meta.zig");
+    _ = @import("infra/table/cache/column.zig");
+    _ = @import("infra/table/cache/writer.zig");
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const CacheError = @import("errors.zig").CacheError;
 
+pub const file_name = "meta.json";
 pub const format_name = "tabl-cache";
 pub const current_version: u32 = 1;
 

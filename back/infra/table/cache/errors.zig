@@ -4,5 +4,9 @@ pub const CacheError = error{
     InvalidMeta,
     InvalidOffsetWidth,
     PathIsNotAbsolute,
+    SizeMismatch,
+    DecreasingEnds,
+    LastEndMismatch,
+    TooManyRows,
     OutOfMemory,
 };
