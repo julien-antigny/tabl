@@ -26,7 +26,6 @@ front/
 
 - Every port documents its role and its contract: what the caller can rely on.
 - A port never mentions an infrastructure detail. A method that cannot be described without talking about infrastructure does not belong in the port.
-- The contract is checked by a contract test written in `core`, which every adapter must pass.
 - Use an interface only when there are several implementations or a test double is needed. Otherwise, use a concrete type.
 
 ## Construction

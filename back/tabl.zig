@@ -1,11 +1,8 @@
+const std = @import("std");
 pub const diagnostic = @import("core/diagnostic.zig");
+pub const Scan = @import("app/scan/scan.zig").Scan;
+pub const CsvReader = @import("infra/table/csv/reader.zig").CsvReader;
 
 test {
-    _ = diagnostic;
-    _ = @import("core/table/reader.zig");
-    _ = @import("app/scan/scan.zig");
-    _ = @import("infra/table/csv/separator.zig");
-    _ = @import("infra/table/csv/records.zig");
-    _ = @import("infra/table/csv/fields.zig");
-    _ = @import("infra/table/csv/reader.zig");
+    std.testing.refAllDecls(@This());
 }
