@@ -3,6 +3,7 @@ const Header = @import("header.zig").Header;
 const Row = @import("row.zig").Row;
 const Reader = @import("reader.zig").Reader;
 const TableError = @import("errors.zig").TableError;
+const contract = @import("reader_contract.zig");
 
 pub const MockReader = struct {
     names: []const []const u8,

@@ -1,6 +1,12 @@
 const std = @import("std");
+const Diagnostics = @import("../../../core/diagnostic.zig").Diagnostics;
+const Header = @import("../../../core/table/header.zig").Header;
 const Row = @import("../../../core/table/row.zig").Row;
+const Reader = @import("../../../core/table/reader.zig").Reader;
+const TableError = @import("../../../core/table/errors.zig").TableError;
+const contract = @import("../../../core/table/reader_contract.zig");
 const Records = @import("records.zig").Records;
+const Record = @import("records.zig").Record;
 const Fields = @import("fields.zig").Fields;
 const Field = @import("fields.zig").Field;
 const Separator = @import("separator.zig").Separator;
@@ -25,6 +31,7 @@ pub const CsvReader = struct {
     values: std.ArrayList([]const u8) = .empty,
     value_bytes: std.ArrayList(u8) = .empty,
     line: u64 = 0,
+    message_buffer: [128]u8 = undefined,
 
     pub fn new(
         io: std.Io,
@@ -58,14 +65,64 @@ pub const CsvReader = struct {
         self.opened = false;
     }
 
+    pub fn reader(self: *CsvReader) Reader {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .header = header, .next = next },
+        };
+    }
+
+    fn header(ptr: *anyopaque, diagnostics: *Diagnostics) TableError!Header {
+        const self: *CsvReader = @ptrCast(@alignCast(ptr));
+        self.loadHeader() catch |err| return self.fail(err, diagnostics);
+        return .{ .names = self.names.items };
+    }
+
+    fn next(ptr: *anyopaque, diagnostics: *Diagnostics) TableError!?Row {
+        const self: *CsvReader = @ptrCast(@alignCast(ptr));
+        return self.nextRow() catch |err| self.fail(err, diagnostics);
+    }
+
+    fn fail(self: *CsvReader, err: anyerror, diagnostics: *Diagnostics) TableError {
+        const table_error = translate(err);
+        diagnostics.push(.{
+            .layer = .infra,
+            .kind = err,
+            .message = self.messageOf(err),
+            .location = .{
+                .path = self.path,
+                .line = if (table_error == error.Malformed) self.line else null,
+            },
+        });
+        return table_error;
+    }
+
+    fn messageOf(self: *CsvReader, err: anyerror) []const u8 {
+        return switch (err) {
+            error.FileNotFound => "file not found",
+            error.OutOfMemory => "out of memory",
+            error.UnterminatedQuote => "unterminated quote",
+            error.UnexpectedCharAfterQuote => "unexpected character after a closing quote",
+            error.ColumnCountMismatch => std.fmt.bufPrint(
+                &self.message_buffer,
+                "expected {d} values, found {d}",
+                .{ self.names.items.len, self.values.items.len },
+            ) catch "wrong number of values",
+            else => std.fmt.bufPrint(
+                &self.message_buffer,
+                "cannot read file ({t})",
+                .{err},
+            ) catch "cannot read file",
+        };
+    }
+
     fn loadHeader(self: *CsvReader) !void {
         if (self.header_loaded) return;
 
         try self.open();
         self.records = .{ .bytes = self.bytes };
 
-        if (try self.records.next()) |record| {
-            self.line = record.line;
+        if (try self.nextRecord()) |record| {
             self.separator = detectSeparator(record.text) orelse .comma;
             try self.split(record.text, &self.names, &self.name_bytes);
         }
@@ -76,8 +133,7 @@ pub const CsvReader = struct {
     fn nextRow(self: *CsvReader) !?Row {
         try self.loadHeader();
 
-        const record = try self.records.next() orelse return null;
-        self.line = record.line;
+        const record = try self.nextRecord() orelse return null;
 
         try self.split(record.text, &self.values, &self.value_bytes);
 
@@ -86,6 +142,15 @@ pub const CsvReader = struct {
         }
 
         return .{ .values = self.values.items };
+    }
+
+    fn nextRecord(self: *CsvReader) !?Record {
+        const record = self.records.next() catch |err| {
+            self.line = self.records.line;
+            return err;
+        };
+        if (record) |found| self.line = found.line;
+        return record;
     }
 
     fn split(
@@ -128,6 +193,18 @@ pub const CsvReader = struct {
         self.opened = true;
     }
 };
+
+fn translate(err: anyerror) TableError {
+    return switch (err) {
+        error.FileNotFound => error.NotFound,
+        error.OutOfMemory => error.OutOfMemory,
+        error.UnterminatedQuote,
+        error.UnexpectedCharAfterQuote,
+        error.ColumnCountMismatch,
+        => error.Malformed,
+        else => error.Unreadable,
+    };
+}
 
 fn valueOf(field: Field, bytes: *std.ArrayList(u8)) []const u8 {
     if (!field.has_escaped_quotes) return field.text;
@@ -446,4 +523,109 @@ test "nextRow fails on a wrong number of values" {
     _ = try reader.nextRow();
     try std.testing.expectError(error.ColumnCountMismatch, reader.nextRow());
     try std.testing.expectEqual(3, reader.line);
+}
+
+test "CsvReader honours the Reader contract" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = "name;city\nAlice;Paris\nBob;Lyon\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.csv", .data = "a,b\n1,2,3\n" });
+
+    var reads = CsvReader.new(io, allocator, tmp.dir, "table.csv");
+    defer reads.close();
+    try contract.checkReads(reads.reader(), &.{ "name", "city" }, &.{
+        &.{ "Alice", "Paris" },
+        &.{ "Bob", "Lyon" },
+    });
+
+    var without_header = CsvReader.new(io, allocator, tmp.dir, "table.csv");
+    defer without_header.close();
+    try contract.checkNextWithoutHeader(without_header.reader(), &.{ "Alice", "Paris" });
+
+    var fails = CsvReader.new(io, allocator, tmp.dir, "broken.csv");
+    defer fails.close();
+    try contract.checkFails(fails.reader(), error.Malformed);
+}
+
+test "failures are translated with their location" {
+    const Case = struct {
+        name: []const u8,
+        path: []const u8,
+        data: ?[]const u8,
+        expected_error: TableError,
+        expected_kind: anyerror,
+        expected_message: []const u8,
+        expected_line: ?u64,
+    };
+
+    const cases = [_]Case{
+        .{
+            .name = "err_missing_file",
+            .path = "missing.csv",
+            .data = null,
+            .expected_error = error.NotFound,
+            .expected_kind = error.FileNotFound,
+            .expected_message = "file not found",
+            .expected_line = null,
+        },
+        .{
+            .name = "err_unterminated_quote",
+            .path = "quote.csv",
+            .data = "a,b\n1,2\n\"3,4\n5,6\n",
+            .expected_error = error.Malformed,
+            .expected_kind = error.UnterminatedQuote,
+            .expected_message = "unterminated quote",
+            .expected_line = 3,
+        },
+        .{
+            .name = "err_char_after_quote",
+            .path = "after.csv",
+            .data = "a,b\n\"1\"x,2\n",
+            .expected_error = error.Malformed,
+            .expected_kind = error.UnexpectedCharAfterQuote,
+            .expected_message = "unexpected character after a closing quote",
+            .expected_line = 2,
+        },
+        .{
+            .name = "err_column_count",
+            .path = "count.csv",
+            .data = "a,b\n1,2\n1,2,3\n",
+            .expected_error = error.Malformed,
+            .expected_kind = error.ColumnCountMismatch,
+            .expected_message = "expected 2 values, found 3",
+            .expected_line = 3,
+        },
+    };
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+
+        if (case.data) |data| {
+            try tmp.dir.writeFile(io, .{ .sub_path = case.path, .data = data });
+        }
+
+        var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, case.path);
+        defer csv.close();
+        var diagnostics: Diagnostics = .{};
+
+        const result = while (true) {
+            const row = csv.reader().next(&diagnostics) catch |err| break err;
+            if (row == null) return error.TestExpectedError;
+        };
+
+        try std.testing.expectEqual(case.expected_error, result);
+        try std.testing.expectEqual(1, diagnostics.size);
+        const diagnostic = diagnostics.last().?;
+        try std.testing.expectEqual(.infra, diagnostic.layer);
+        try std.testing.expectEqual(case.expected_kind, diagnostic.kind);
+        try std.testing.expectEqualStrings(case.expected_message, diagnostic.message);
+        try std.testing.expectEqualStrings(case.path, diagnostic.location.?.path);
+        try std.testing.expectEqual(case.expected_line, diagnostic.location.?.line);
+    }
 }

@@ -45,7 +45,10 @@ pub const Records = struct {
             }
         }
 
-        if (in_quotes) return error.UnterminatedQuote;
+        if (in_quotes) {
+            self.line = start_line;
+            return error.UnterminatedQuote;
+        }
 
         self.position = self.bytes.len;
         return .{
@@ -150,7 +153,8 @@ test "next" {
 }
 
 test "next fails on an unterminated quote" {
-    var records: Records = .{ .bytes = "a\n\"b" };
+    var records: Records = .{ .bytes = "a\n\"b\nc\nd" };
     _ = try records.next();
     try std.testing.expectError(error.UnterminatedQuote, records.next());
+    try std.testing.expectEqual(2, records.line);
 }
