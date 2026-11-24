@@ -18,7 +18,7 @@ front/
 
 ## Vocabulary
 
-- **Port**: an interface declared in `core`, implemented in `infra`.
+- **Port**: an interface declared in `core`. Implemented in `infra` when the implementation performs I/O (files, mmap, network…), otherwise directly in `core`.
 - **Adapter**: an implementation of a port, tied to a technology (mmap, CSV, JSON…).
 - **Service**: logic in `core` or `app`, free of any technology.
 
@@ -35,6 +35,7 @@ front/
 
 ## Errors
 
-- Each layer has its own errors.
-- A layer never lets another layer's error through: it translates it into its own, keeping the cause.
+- An error is translated when it crosses an abstraction boundary (e.g. CSV details become `Malformed`), keeping the cause.
+- An outer layer may reuse the errors of an inner one when it has nothing to add; an inner layer never uses the errors of an outer one.
+- How errors are split or grouped follows what a caller needs to tell apart, not guesses about the future.
 - User-facing messages live in the front.

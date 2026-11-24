@@ -31,20 +31,21 @@ pub const Scan = struct {
             rows += 1;
         }
 
-        return .{ .rows = rows, .columns = header.names.len };
+        return .{
+            .rows = rows,
+            .columns = header.names.len,
+        };
     }
 };
 
 fn fail(err: TableError, diagnostics: *Diagnostics) ScanError {
-    const scan_error = err;
-
     diagnostics.push(.{
         .layer = .app,
-        .kind = scan_error,
+        .kind = err,
         .message = "cannot scan the table",
         .cause = diagnostics.last(),
     });
-    return scan_error;
+    return err;
 }
 
 test "run" {
@@ -96,13 +97,13 @@ test "run translates a reader failure and stacks its diagnostic" {
     var diagnostics: Diagnostics = .{};
 
     try std.testing.expectError(
-        error.TableMalformed,
+        error.Malformed,
         Scan.new(mock.reader()).run(&diagnostics),
     );
 
     try std.testing.expectEqual(2, diagnostics.size);
     const latest = diagnostics.last().?;
     try std.testing.expectEqual(.app, latest.layer);
-    try std.testing.expectEqual(error.TableMalformed, latest.kind);
+    try std.testing.expectEqual(error.Malformed, latest.kind);
     try std.testing.expectEqual(.infra, latest.cause.?.layer);
 }
