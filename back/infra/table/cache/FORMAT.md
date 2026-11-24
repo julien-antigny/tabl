@@ -109,6 +109,7 @@ Tout échec refuse le cache avec un message clair.
 | `format` vaut `"tabl-cache"` | pas un cache tabl |
 | `version` vaut `1` | version non prise en charge (cache créé par une autre version de tabl) |
 | `offset_width` vaut `32` ou `64` | cache abîmé |
+| `source.path` est un chemin absolu | cache abîmé |
 | chaque colonne a ses deux fichiers | cache abîmé |
 | taille de `N.ends` = `rows` × `offset_width` / 8 | cache abîmé |
 | positions croissantes (chacune ≥ la précédente) | cache abîmé |
