@@ -8,5 +8,7 @@ pub const CacheError = error{
     DecreasingEnds,
     LastEndMismatch,
     TooManyRows,
+    Incomplete,
+    MissingColumnFile,
     OutOfMemory,
 };

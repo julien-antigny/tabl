@@ -128,3 +128,10 @@ Vérifier que les positions sont croissantes oblige à lire tout `N.ends` à l'o
 | 2 | types (`i64`, `f64`, dates) et masque des valeurs vides | 5 |
 | 3 | min et max par bloc de lignes | 6 |
 | 4 | dictionnaire pour les valeurs répétées | 7 |
+
+- Pistes non planifiées, à décider sur mesure :
+
+| Piste | Principe | Gain attendu | Coût |
+|---|---|---|---|
+| positions par bloc | une base `u64` tous les 65 536 lignes, puis des écarts sur 16 bits | positions divisées par 2 | faible ; l'accès direct est conservé |
+| compression par bloc (zstd, lz4) | chaque bloc de texte compressé, décompressé à la lecture | ×2 à ×4 sur le texte libre | élevé ; perte du mmap direct, cache de blocs à gérer |
