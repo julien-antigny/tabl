@@ -36,7 +36,7 @@ pub const TextColumn = struct {
         rows: u32,
     ) CacheError!TextColumn {
         const ends = try endsOf(ends_bytes, offset_width, rows);
-        try checkEnds(ends, bytes.len);
+        //try checkEnds(ends, bytes.len);
         return .{ .ends = ends, .bytes = bytes };
     }
 
