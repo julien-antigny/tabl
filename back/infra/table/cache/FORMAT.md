@@ -112,10 +112,9 @@ Any failure refuses the cache with a clear message.
 | `source.path` is an absolute path | damaged cache |
 | each column has both of its files | damaged cache |
 | size of `N.ends` = `rows` × `offset_width` / 8 | damaged cache |
-| positions never decrease (each ≥ the previous one) | damaged cache |
 | last position = size of `N.bytes` (0 when `rows` = 0) | damaged cache |
 
-Checking that positions never decrease means reading all of `N.ends` on opening. Version 1 accepts this cost. It will be measured, and the check will become lazy if it gets in the way.
+Positions are not checked one by one on opening: it would read all of `N.ends`, a cost that grows with the row count. Instead, reading a value clamps its positions to the size of `N.bytes`. A damaged cache may show wrong values, but nothing is ever read outside the files.
 
 ## Evolution
 

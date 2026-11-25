@@ -232,7 +232,6 @@ pub const CacheTable = struct {
             error.PathIsNotAbsolute => "source path is not absolute",
             error.MissingColumnFile => "missing column file",
             error.SizeMismatch => "file size does not match the row count",
-            error.DecreasingEnds => "value positions are decreasing",
             error.LastEndMismatch => "value positions do not match the text size",
             else => std.fmt.bufPrint(
                 &self.message_buffer,
@@ -254,7 +253,6 @@ fn translate(err: anyerror) TableError {
         error.PathIsNotAbsolute,
         error.MissingColumnFile,
         error.SizeMismatch,
-        error.DecreasingEnds,
         error.LastEndMismatch,
         => TableError.Malformed,
         else => TableError.Unreadable,
@@ -349,10 +347,6 @@ fn truncateEnds(dir: std.Io.Dir) !void {
     try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 5, 0, 0, 0 } });
 }
 
-fn decreaseEnds(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 9, 0, 0, 0, 5, 0, 0, 0 } });
-}
-
 fn extendBytes(dir: std.Io.Dir) !void {
     try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.bytes", .data = "ParisLyonNice" });
 }
@@ -407,13 +401,6 @@ test "refuses a damaged cache" {
             .damage = truncateEnds,
             .expected = TableError.Malformed,
             .message = "file size does not match the row count",
-            .path = "sales.tabl/0.ends",
-        },
-        .{
-            .name = "error_decreasing_ends",
-            .damage = decreaseEnds,
-            .expected = TableError.Malformed,
-            .message = "value positions are decreasing",
             .path = "sales.tabl/0.ends",
         },
         .{
