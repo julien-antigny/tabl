@@ -1,6 +1,7 @@
 const std = @import("std");
 const Diagnostics = @import("../../core/diagnostic.zig").Diagnostics;
 const Row = @import("../../core/table/row.zig").Row;
+const Value = @import("../../core/table/value.zig").Value;
 const Reader = @import("../../core/table/reader.zig").Reader;
 const Writer = @import("../../core/table/writer.zig").Writer;
 const MockReader = @import("../../core/table/reader_mock.zig").MockReader;
@@ -50,8 +51,8 @@ test "run copies every row" {
     var reader: MockReader = .{
         .names = &.{ "name", "city" },
         .rows = &.{
-            .{ .values = &.{ "Alice", "Paris" } },
-            .{ .values = &.{ "Bob", "Lyon" } },
+            .{ .values = &.{ .{ .text = "Alice" }, .{ .text = "Paris" } } },
+            .{ .values = &.{ .{ .text = "Bob" }, .empty } },
         },
     };
     var writer: MockWriter = .new(std.testing.allocator);
@@ -64,7 +65,8 @@ test "run copies every row" {
     try std.testing.expectEqual(0, diagnostics.size);
     try std.testing.expectEqualStrings("city", writer.names[1]);
     try std.testing.expectEqual(2, writer.rows.items.len);
-    try std.testing.expectEqualStrings("Bob", writer.rows.items[1][0]);
+    try std.testing.expectEqualDeep(Value{ .text = "Bob" }, writer.rows.items[1][0]);
+    try std.testing.expectEqualDeep(Value.empty, writer.rows.items[1][1]);
     try std.testing.expect(writer.finished);
 }
 
@@ -113,7 +115,7 @@ test "run stops on a failure and does not finish" {
 
         var reader: MockReader = .{
             .names = &.{"name"},
-            .rows = &.{.{ .values = &.{"Alice"} }},
+            .rows = &.{.{ .values = &.{.{ .text = "Alice" }} }},
             .failure = case.reader_failure,
         };
         var writer: MockWriter = .new(std.testing.allocator);

@@ -1,6 +1,7 @@
 const Diagnostics = @import("../diagnostic.zig").Diagnostics;
 const Header = @import("header.zig").Header;
 const TableError = @import("errors.zig").TableError;
+const Value = @import("value.zig").Value;
 
 /// How a table compares with the source it was imported from.
 pub const Freshness = enum {
@@ -24,10 +25,23 @@ pub const Table = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        header: *const fn (ptr: *anyopaque, diagnostics: *Diagnostics) TableError!Header,
-        rowCount: *const fn (ptr: *anyopaque, diagnostics: *Diagnostics) TableError!u32,
-        value: *const fn (ptr: *anyopaque, row: u32, column: usize) []const u8,
-        freshness: *const fn (ptr: *anyopaque, diagnostics: *Diagnostics) TableError!Freshness,
+        header: *const fn (
+            ptr: *anyopaque,
+            diagnostics: *Diagnostics,
+        ) TableError!Header,
+        rowCount: *const fn (
+            ptr: *anyopaque,
+            diagnostics: *Diagnostics,
+        ) TableError!u32,
+        value: *const fn (
+            ptr: *anyopaque,
+            row: u32,
+            column: usize,
+        ) Value,
+        freshness: *const fn (
+            ptr: *anyopaque,
+            diagnostics: *Diagnostics,
+        ) TableError!Freshness,
     };
 
     /// Returns the column names, in order.
@@ -45,13 +59,13 @@ pub const Table = struct {
         return self.vtable.rowCount(self.ptr, diagnostics);
     }
 
-    /// Returns the text of one cell. An empty cell returns an empty text.
+    /// Returns the value of one cell: `.empty` when the cell has no value.
+    /// A text stays valid as long as the table exists.
     ///
     /// `header` or `rowCount` must have succeeded before: `value` cannot fail.
     /// `row` must be below `rowCount()` and `column` below the number of
     /// names in the header: any other call is a programming error.
-    /// The text stays valid as long as the table exists.
-    pub fn value(self: Table, row: u32, column: usize) []const u8 {
+    pub fn value(self: Table, row: u32, column: usize) Value {
         return self.vtable.value(self.ptr, row, column);
     }
 

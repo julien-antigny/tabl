@@ -6,6 +6,7 @@ const table_port = @import("table.zig");
 const Table = table_port.Table;
 const Freshness = table_port.Freshness;
 const TableError = @import("errors.zig").TableError;
+const Value = @import("value.zig").Value;
 
 pub const MockTable = struct {
     names: []const []const u8,
@@ -38,7 +39,7 @@ pub const MockTable = struct {
         return @intCast(self.rows.len);
     }
 
-    fn value(ptr: *anyopaque, row: u32, column: usize) []const u8 {
+    fn value(ptr: *anyopaque, row: u32, column: usize) Value {
         const self: *MockTable = @ptrCast(@alignCast(ptr));
         std.debug.assert(self.opened);
         std.debug.assert(row < self.rows.len);

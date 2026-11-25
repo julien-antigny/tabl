@@ -10,6 +10,7 @@ const Fields = @import("fields.zig").Fields;
 const Field = @import("fields.zig").Field;
 const Separator = @import("separator.zig").Separator;
 const detectSeparator = @import("separator.zig").detect;
+const Value = @import("../../../core/table/value.zig").Value;
 
 const bom = "\xEF\xBB\xBF";
 
@@ -27,7 +28,7 @@ pub const CsvReader = struct {
     names: std.ArrayList([]const u8) = .empty,
     name_bytes: std.ArrayList(u8) = .empty,
     header_loaded: bool = false,
-    values: std.ArrayList([]const u8) = .empty,
+    values: std.ArrayList(Value) = .empty,
     value_bytes: std.ArrayList(u8) = .empty,
     line: u64 = 0,
     message_buffer: [128]u8 = undefined,
@@ -105,7 +106,10 @@ pub const CsvReader = struct {
             error.ColumnCountMismatch => std.fmt.bufPrint(
                 &self.message_buffer,
                 "expected {d} values, found {d}",
-                .{ self.names.items.len, self.values.items.len },
+                .{
+                    self.names.items.len,
+                    self.values.items.len,
+                },
             ) catch "wrong number of values",
             else => std.fmt.bufPrint(
                 &self.message_buffer,
@@ -123,7 +127,7 @@ pub const CsvReader = struct {
 
         if (try self.nextRecord()) |record| {
             self.separator = detectSeparator(record.text) orelse .comma;
-            try self.split(record.text, &self.names, &self.name_bytes);
+            try self.splitNames(record.text, &self.names, &self.name_bytes);
         }
 
         self.header_loaded = true;
@@ -134,7 +138,7 @@ pub const CsvReader = struct {
 
         const record = try self.nextRecord() orelse return null;
 
-        try self.split(record.text, &self.values, &self.value_bytes);
+        try self.splitValues(record.text, &self.values, &self.value_bytes);
 
         if (self.values.items.len != self.names.items.len) {
             return error.ColumnCountMismatch;
@@ -152,10 +156,29 @@ pub const CsvReader = struct {
         return record;
     }
 
-    fn split(
+    fn splitNames(
         self: *CsvReader,
         text: []const u8,
-        values: *std.ArrayList([]const u8),
+        names: *std.ArrayList([]const u8),
+        bytes: *std.ArrayList(u8),
+    ) !void {
+        names.clearRetainingCapacity();
+        bytes.clearRetainingCapacity();
+        try bytes.ensureTotalCapacity(self.allocator, text.len);
+
+        var fields: Fields = .{
+            .text = text,
+            .separator = @backingInt(self.separator),
+        };
+        while (try fields.next()) |field| {
+            try names.append(self.allocator, textOf(field, bytes));
+        }
+    }
+
+    fn splitValues(
+        self: *CsvReader,
+        text: []const u8,
+        values: *std.ArrayList(Value),
         bytes: *std.ArrayList(u8),
     ) !void {
         values.clearRetainingCapacity();
@@ -205,7 +228,7 @@ fn translate(err: anyerror) TableError {
     };
 }
 
-fn valueOf(field: Field, bytes: *std.ArrayList(u8)) []const u8 {
+fn textOf(field: Field, bytes: *std.ArrayList(u8)) []const u8 {
     if (!field.has_escaped_quotes) return field.text;
 
     const start = bytes.items.len;
@@ -215,6 +238,11 @@ fn valueOf(field: Field, bytes: *std.ArrayList(u8)) []const u8 {
         if (field.text[index] == '"') index += 1;
     }
     return bytes.items[start..];
+}
+
+fn valueOf(field: Field, bytes: *std.ArrayList(u8)) Value {
+    if (!field.quoted and field.text.len == 0) return .empty;
+    return .{ .text = textOf(field, bytes) };
 }
 
 fn withoutBom(bytes: []const u8) []const u8 {
@@ -423,7 +451,7 @@ test "nextRow" {
         name: []const u8,
         data: []const u8,
         expected_names: []const []const u8,
-        expected_rows: []const []const []const u8,
+        expected_rows: []const []const Value,
     };
 
     const cases = [_]Case{
@@ -432,8 +460,8 @@ test "nextRow" {
             .data = "name,city\nAlice,Paris\nBob,Lyon\n",
             .expected_names = &.{ "name", "city" },
             .expected_rows = &.{
-                &.{ "Alice", "Paris" },
-                &.{ "Bob", "Lyon" },
+                &.{ .{ .text = "Alice" }, .{ .text = "Paris" } },
+                &.{ .{ .text = "Bob" }, .{ .text = "Lyon" } },
             },
         },
         .{
@@ -441,7 +469,7 @@ test "nextRow" {
             .data = "name;address\nAlice;\"1 rue A; Paris\"\n",
             .expected_names = &.{ "name", "address" },
             .expected_rows = &.{
-                &.{ "Alice", "1 rue A; Paris" },
+                &.{ .{ .text = "Alice" }, .{ .text = "1 rue A; Paris" } },
             },
         },
         .{
@@ -449,7 +477,7 @@ test "nextRow" {
             .data = "a,b,c\n\"x \"\"1\"\"\",plain,\"y \"\"2\"\"\"\n",
             .expected_names = &.{ "a", "b", "c" },
             .expected_rows = &.{
-                &.{ "x \"1\"", "plain", "y \"2\"" },
+                &.{ .{ .text = "x \"1\"" }, .{ .text = "plain" }, .{ .text = "y \"2\"" } },
             },
         },
         .{
@@ -457,7 +485,7 @@ test "nextRow" {
             .data = "\"say \"\"hi\"\"\",b\n1,2\n",
             .expected_names = &.{ "say \"hi\"", "b" },
             .expected_rows = &.{
-                &.{ "1", "2" },
+                &.{ .{ .text = "1" }, .{ .text = "2" } },
             },
         },
         .{
@@ -465,7 +493,15 @@ test "nextRow" {
             .data = "a,b,c\n,,\n",
             .expected_names = &.{ "a", "b", "c" },
             .expected_rows = &.{
-                &.{ "", "", "" },
+                &.{ .empty, .empty, .empty },
+            },
+        },
+        .{
+            .name = "ok_empty_value_and_empty_text",
+            .data = "a,b,c\n,\"\",x\n",
+            .expected_names = &.{ "a", "b", "c" },
+            .expected_rows = &.{
+                &.{ .empty, .{ .text = "" }, .{ .text = "x" } },
             },
         },
         .{
@@ -498,7 +534,7 @@ test "nextRow" {
             const row = (try reader.nextRow()).?;
             try std.testing.expectEqual(expected.len, row.values.len);
             for (expected, row.values) |expected_value, value| {
-                try std.testing.expectEqualStrings(expected_value, value);
+                try std.testing.expectEqualDeep(expected_value, value);
             }
         }
         try std.testing.expect(try reader.nextRow() == null);

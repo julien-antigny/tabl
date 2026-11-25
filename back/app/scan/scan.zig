@@ -61,9 +61,9 @@ test "run" {
             .name = "ok_three_rows",
             .names = &.{ "name", "city" },
             .rows = &.{
-                .{ .values = &.{ "Alice", "Paris" } },
-                .{ .values = &.{ "Bob", "Lyon" } },
-                .{ .values = &.{ "Carol", "Nantes" } },
+                .{ .values = &.{ .{ .text = "Alice" }, .{ .text = "Paris" } } },
+                .{ .values = &.{ .{ .text = "Bob" }, .empty } },
+                .{ .values = &.{ .{ .text = "Carol" }, .{ .text = "Nantes" } } },
             },
             .expected = .{ .rows = 3, .columns = 2 },
         },
@@ -91,7 +91,7 @@ test "run" {
 test "run translates a reader failure and stacks its diagnostic" {
     var mock: MockReader = .{
         .names = &.{"name"},
-        .rows = &.{.{ .values = &.{"Alice"} }},
+        .rows = &.{.{ .values = &.{.{ .text = "Alice" }} }},
         .failure = error.Malformed,
     };
     var diagnostics: Diagnostics = .{};

@@ -4,12 +4,13 @@ const Header = @import("header.zig").Header;
 const Row = @import("row.zig").Row;
 const Writer = @import("writer.zig").Writer;
 const TableError = @import("errors.zig").TableError;
+const Value = @import("value.zig").Value;
 
 pub const MockWriter = struct {
     arena: std.heap.ArenaAllocator,
     failure: ?Failure = null,
     names: []const []const u8 = &.{},
-    rows: std.ArrayList([]const []const u8) = .empty,
+    rows: std.ArrayList([]const Value) = .empty,
     started: bool = false,
     finished: bool = false,
 
@@ -44,7 +45,7 @@ pub const MockWriter = struct {
         std.debug.assert(!self.started);
 
         try self.failOn(.header, diagnostics);
-        self.names = try self.copy(value.names);
+        self.names = try self.copyTexts(value.names);
         self.started = true;
     }
 
@@ -58,7 +59,7 @@ pub const MockWriter = struct {
         std.debug.assert(value.values.len == self.names.len);
 
         try self.failOn(.row, diagnostics);
-        const values = try self.copy(value.values);
+        const values = try self.copyValues(value.values);
         try self.rows.append(self.arena.allocator(), values);
     }
 
@@ -86,15 +87,34 @@ pub const MockWriter = struct {
         return failure.err;
     }
 
-    fn copy(
+    fn copyTexts(
         self: *MockWriter,
         texts: []const []const u8,
     ) error{OutOfMemory}![]const []const u8 {
         const allocator = self.arena.allocator();
         const copies = try allocator.alloc([]const u8, texts.len);
+
         for (texts, copies) |text, *copied| {
             copied.* = try allocator.dupe(u8, text);
         }
+
+        return copies;
+    }
+
+    fn copyValues(
+        self: *MockWriter,
+        values: []const Value,
+    ) error{OutOfMemory}![]const Value {
+        const allocator = self.arena.allocator();
+        const copies = try allocator.alloc(Value, values.len);
+
+        for (values, copies) |text, *copied| {
+            copied.* = switch (text) {
+                .empty => .empty,
+                .text => |bytes| .{ .text = try allocator.dupe(u8, bytes) },
+            };
+        }
+
         return copies;
     }
 };

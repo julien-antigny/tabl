@@ -2,6 +2,7 @@ const std = @import("std");
 const Diagnostics = @import("../../../core/diagnostic.zig").Diagnostics;
 const Header = @import("../../../core/table/header.zig").Header;
 const Row = @import("../../../core/table/row.zig").Row;
+const Value = @import("../../../core/table/value.zig").Value;
 const Writer = @import("../../../core/table/writer.zig").Writer;
 const TableError = @import("../../../core/table/errors.zig").TableError;
 const CacheError = @import("errors.zig").CacheError;
@@ -14,8 +15,11 @@ const ColumnFiles = struct {
     ends_writer: std.Io.File.Writer,
     bytes_file: std.Io.File,
     bytes_writer: std.Io.File.Writer,
+    empty_file: std.Io.File,
+    empty_writer: std.Io.File.Writer,
     offset_width: u32 = 32,
     end: u64 = 0,
+    pending_mask: u8 = 0,
 };
 
 const FileName = [32]u8;
@@ -58,6 +62,7 @@ pub const CacheWriter = struct {
         for (self.columns[0..self.opened_columns]) |column| {
             column.ends_file.close(self.io);
             column.bytes_file.close(self.io);
+            column.empty_file.close(self.io);
         }
         if (self.cache_dir) |cache_dir| {
             cache_dir.close(self.io);
@@ -152,6 +157,12 @@ pub const CacheWriter = struct {
             .{},
         );
         errdefer bytes_file.close(self.io);
+        const empty_file = try cache_dir.createFile(
+            self.io,
+            fileName(&name, index, "empty"),
+            .{},
+        );
+        errdefer empty_file.close(self.io);
 
         return .{
             .ends_file = ends_file,
@@ -166,13 +177,23 @@ pub const CacheWriter = struct {
                 self.io,
                 try arena.alloc(u8, buffer_size),
             ),
+            .empty_file = empty_file,
+            .empty_writer = .init(
+                empty_file,
+                self.io,
+                try arena.alloc(u8, buffer_size),
+            ),
         };
     }
 
-    fn appendRow(self: *CacheWriter, values: []const []const u8) !void {
+    fn appendRow(self: *CacheWriter, values: []const Value) !void {
         if (self.rows == std.math.maxInt(u32)) return error.TooManyRows;
 
-        for (self.columns, values, 0..) |*column, text, index| {
+        for (self.columns, values, 0..) |*column, value, index| {
+            const text = switch (value) {
+                .empty => "",
+                .text => |text| text,
+            };
             column.bytes_writer.interface.writeAll(text) catch return writeErrorOf(
                 &column.bytes_writer,
             );
@@ -182,6 +203,7 @@ pub const CacheWriter = struct {
                 try self.widenEnds(column, index);
             }
             try writeEnd(column);
+            try appendEmptyBit(column, self.rows, value == .empty);
         }
 
         self.rows += 1;
@@ -251,8 +273,10 @@ pub const CacheWriter = struct {
 
         const columns = try arena.alloc(meta.Column, self.columns.len);
         for (self.columns, self.names, columns) |*files, name, *column| {
+            try writePendingMask(files, self.rows);
             try files.ends_writer.flush();
             try files.bytes_writer.flush();
+            try files.empty_writer.flush();
             column.* = .{ .name = name, .offset_width = files.offset_width };
         }
 
@@ -332,6 +356,27 @@ fn writeEnd(column: *ColumnFiles) !void {
     result catch return writeErrorOf(&column.ends_writer);
 }
 
+fn appendEmptyBit(column: *ColumnFiles, row: u32, is_empty: bool) !void {
+    const bit: u3 = @intCast(row % 8);
+    if (is_empty) {
+        column.pending_mask |= @as(u8, 1) << bit;
+    }
+    if (bit == 7) {
+        column.empty_writer.interface.writeByte(column.pending_mask) catch return writeErrorOf(
+            &column.empty_writer,
+        );
+        column.pending_mask = 0;
+    }
+}
+
+fn writePendingMask(column: *ColumnFiles, rows: u32) !void {
+    if (rows % 8 == 0) return;
+    column.empty_writer.interface.writeByte(column.pending_mask) catch return writeErrorOf(
+        &column.empty_writer,
+    );
+    column.pending_mask = 0;
+}
+
 fn fileName(buffer: *FileName, index: usize, extension: []const u8) []const u8 {
     return std.fmt.bufPrint(
         buffer,
@@ -356,7 +401,7 @@ const testing = std.testing;
 fn writeTable(
     cache: *CacheWriter,
     names: []const []const u8,
-    rows: []const []const []const u8,
+    rows: []const []const Value,
 ) !void {
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
@@ -383,7 +428,7 @@ test "writes the files described in FORMAT.md" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{
         .sub_path = "sales.csv",
-        .data = "city,age\nParis,31\nLyon,45\n",
+        .data = "city,age\nParis,31\nLyon,45\n,\"\"\n",
     });
 
     var cache: CacheWriter = .new(
@@ -397,13 +442,19 @@ test "writes the files described in FORMAT.md" {
     try writeTable(
         &cache,
         &.{ "city", "age" },
-        &.{ &.{ "Paris", "31" }, &.{ "Lyon", "45" } },
+        &.{
+            &.{ .{ .text = "Paris" }, .{ .text = "31" } },
+            &.{ .{ .text = "Lyon" }, .{ .text = "45" } },
+            &.{ .empty, .{ .text = "" } },
+        },
     );
 
     try expectFile(tmp.dir, "sales.tabl/0.bytes", "ParisLyon");
-    try expectFile(tmp.dir, "sales.tabl/0.ends", &.{ 5, 0, 0, 0, 9, 0, 0, 0 });
+    try expectFile(tmp.dir, "sales.tabl/0.ends", &.{ 5, 0, 0, 0, 9, 0, 0, 0, 9, 0, 0, 0 });
+    try expectFile(tmp.dir, "sales.tabl/0.empty", &.{0x04});
     try expectFile(tmp.dir, "sales.tabl/1.bytes", "3145");
-    try expectFile(tmp.dir, "sales.tabl/1.ends", &.{ 2, 0, 0, 0, 4, 0, 0, 0 });
+    try expectFile(tmp.dir, "sales.tabl/1.ends", &.{ 2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0 });
+    try expectFile(tmp.dir, "sales.tabl/1.empty", &.{0x00});
 
     const bytes = try tmp.dir.readFileAlloc(
         testing.io,
@@ -415,8 +466,8 @@ test "writes the files described in FORMAT.md" {
     const parsed = try meta.parse(testing.allocator, bytes);
     defer parsed.deinit();
 
-    try testing.expectEqual(2, parsed.value.rows);
-    try testing.expectEqual(26, parsed.value.source.size);
+    try testing.expectEqual(3, parsed.value.rows);
+    try testing.expectEqual(30, parsed.value.source.size);
     try testing.expect(
         std.mem.endsWith(u8, parsed.value.source.path, "/sales.csv"),
     );
@@ -448,7 +499,7 @@ test "writes no meta.json until finish" {
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
     try table_writer.header(.{ .names = &.{"city"} }, &diagnostics);
-    try table_writer.row(.{ .values = &.{"Paris"} }, &diagnostics);
+    try table_writer.row(.{ .values = &.{.{ .text = "Paris" }} }, &diagnostics);
 
     try testing.expectError(
         error.FileNotFound,
@@ -473,7 +524,10 @@ test "widens a column past the narrow limit" {
     try writeTable(
         &cache,
         &.{ "city", "age" },
-        &.{ &.{ "Paris", "31" }, &.{ "Lyon", "45" } },
+        &.{
+            &.{ .{ .text = "Paris" }, .{ .text = "31" } },
+            &.{ .{ .text = "Lyon" }, .{ .text = "45" } },
+        },
     );
 
     try expectFile(
@@ -499,6 +553,31 @@ test "widens a column past the narrow limit" {
 
     try testing.expectEqual(64, parsed.value.columns[0].offset_width);
     try testing.expectEqual(32, parsed.value.columns[1].offset_width);
+}
+
+test "writes a mask spanning several bytes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "sales.csv", .data = "" });
+
+    var cache: CacheWriter = .new(
+        testing.io,
+        testing.allocator,
+        tmp.dir,
+        "sales.tabl",
+        "sales.csv",
+    );
+    defer cache.close();
+
+    const paris: []const Value = &.{.{ .text = "Paris" }};
+    const empty: []const Value = &.{.empty};
+    try writeTable(
+        &cache,
+        &.{"city"},
+        &.{ empty, paris, paris, paris, paris, paris, paris, paris, empty, empty },
+    );
+
+    try expectFile(tmp.dir, "sales.tabl/0.empty", &.{ 0x01, 0x03 });
 }
 
 test "fails when the source is missing" {

@@ -12,8 +12,14 @@ pub const Reader = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        header: *const fn (ptr: *anyopaque, diagnostics: *Diagnostics) TableError!Header,
-        next: *const fn (ptr: *anyopaque, diagnostics: *Diagnostics) TableError!?Row,
+        header: *const fn (
+            ptr: *anyopaque,
+            diagnostics: *Diagnostics,
+        ) TableError!Header,
+        next: *const fn (
+            ptr: *anyopaque,
+            diagnostics: *Diagnostics,
+        ) TableError!?Row,
     };
 
     /// Returns the column names.
