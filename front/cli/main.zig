@@ -1,50 +1,65 @@
 const std = @import("std");
-
-const report = @import("report.zig");
 const tabl = @import("tabl");
+
+const command = @import("command.zig");
+const report = @import("report.zig");
+const run = @import("run.zig");
 
 const usage =
     \\usage: tabl <command> [arguments]
     \\
+    \\commands:
+    \\  scan <file.csv>                       count the rows and columns of a CSV file
+    \\  import <file.csv> <cache>             import a CSV file into a cache
+    \\  page <cache> <first row> <row count>  print rows from a cache
+    \\
 ;
-
-fn isCommand(input: []const u8) bool {
-    return std.mem.eql(u8, input, "scan");
-}
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var buffer: [1024]u8 = undefined;
-    var stdout: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    var out_buffer: [4096]u8 = undefined;
+    var stdout: std.Io.File.Writer = .init(.stdout(), init.io, &out_buffer);
+    var err_buffer: [1024]u8 = undefined;
+    var stderr: std.Io.File.Writer = .init(.stderr(), init.io, &err_buffer);
+    const out = &stdout.interface;
+    const err_out = &stderr.interface;
 
-    if (args.len < 3 or !isCommand(args[1])) {
-        try stdout.interface.writeAll(usage);
-        try stdout.interface.flush();
-        return;
-    }
+    const current = command.parse(args) catch |err| {
+        if (args.len >= 2) {
+            try err_out.print("error: {s}\n\n", .{command.messageOf(err)});
+        }
+        try err_out.writeAll(usage);
+        try err_out.flush();
+        std.process.exit(2);
+    };
 
-    var csv = tabl.CsvReader.new(init.io, init.gpa, std.Io.Dir.cwd(), args[2]);
-    defer csv.close();
-
-    const scan = tabl.Scan.new(csv.reader());
     var diagnostics: tabl.diagnostic.Diagnostics = .{};
+    const result = switch (current) {
+        .scan => |scan| run.scan(init, scan, out, &diagnostics),
+        .import => |import| run.import(init, import, out, &diagnostics),
+        .page => |page| run.page(init, page, out, err_out, &diagnostics),
+    };
 
-    const summary = scan.run(&diagnostics) catch {
-        var error_buffer: [1024]u8 = undefined;
-        var stderr: std.Io.File.Writer = .init(.stderr(), init.io, &error_buffer);
-        try report.print(&stderr.interface, diagnostics.last().?);
-        try stderr.interface.flush();
-        csv.close();
+    result catch |err| {
+        try out.flush();
+        if (diagnostics.last()) |diagnostic| {
+            try report.print(err_out, diagnostic);
+        } else {
+            try err_out.print("error: {t}\n", .{err});
+        }
+        try err_out.flush();
         std.process.exit(1);
     };
 
-    try stdout.interface.print(
-        "{d} rows, {d} columns\n",
-        .{ summary.rows, summary.columns },
-    );
+    try out.flush();
+    try err_out.flush();
+}
 
-    try stdout.interface.flush();
+test {
+    _ = command;
+    _ = report;
+    _ = run;
 }
 
 test "usage names the program" {

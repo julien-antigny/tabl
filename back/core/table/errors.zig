@@ -3,4 +3,8 @@ pub const TableError = error{
     Unreadable,
     Malformed,
     OutOfMemory,
+    Unwritable,
+    Unsupported,
+    ColumnNotFoud,
+    RowNotValid,
 };
