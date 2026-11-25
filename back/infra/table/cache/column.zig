@@ -36,15 +36,17 @@ pub const TextColumn = struct {
         rows: u32,
     ) CacheError!TextColumn {
         const ends = try endsOf(ends_bytes, offset_width, rows);
-        //try checkEnds(ends, bytes.len);
+        try checkLastEnd(ends, bytes.len);
         return .{ .ends = ends, .bytes = bytes };
     }
 
+    /// Positions are clamped to `bytes`: on a damaged cache the value may be
+    /// wrong, but it is never read outside the file.
     pub fn value(self: TextColumn, row: u32) []const u8 {
         std.debug.assert(row < self.ends.len());
 
-        const start = if (row == 0) 0 else self.ends.at(row - 1);
-        const end = self.ends.at(row);
+        const end = @min(self.ends.at(row), self.bytes.len);
+        const start = @min(if (row == 0) 0 else self.ends.at(row - 1), end);
         return self.bytes[@intCast(start)..@intCast(end)];
     }
 };
@@ -66,19 +68,9 @@ fn endsOf(ends_bytes: []align(8) const u8, offset_width: u32, rows: u32) CacheEr
     };
 }
 
-fn checkEnds(ends: Ends, bytes_len: usize) CacheError!void {
-    var previous: u64 = 0;
-
-    switch (ends) {
-        inline else => |slice| for (slice) |end| {
-            if (end < previous) {
-                return CacheError.DecreasingEnds;
-            }
-            previous = end;
-        },
-    }
-
-    if (previous != bytes_len) {
+fn checkLastEnd(ends: Ends, bytes_len: usize) CacheError!void {
+    const last = if (ends.len() == 0) 0 else ends.at(ends.len() - 1);
+    if (last != bytes_len) {
         return CacheError.LastEndMismatch;
     }
 }
@@ -138,6 +130,20 @@ test "value" {
             .offset_width = 32,
             .expected = &.{},
         },
+        .{
+            .name = "ok_damaged_decreasing_ends",
+            .ends = &.{ 5, 3, 9 },
+            .bytes = "ParisLyon",
+            .offset_width = 32,
+            .expected = &.{ "Paris", "", "isLyon" },
+        },
+        .{
+            .name = "ok_damaged_end_past_bytes",
+            .ends = &.{ 12, 9 },
+            .bytes = "ParisLyon",
+            .offset_width = 64,
+            .expected = &.{ "ParisLyon", "" },
+        },
     };
 
     for (cases) |case| {
@@ -187,14 +193,6 @@ test "new fails" {
             .offset_width = 32,
             .rows = 3,
             .expected = CacheError.SizeMismatch,
-        },
-        .{
-            .name = "error_decreasing_ends",
-            .ends = &.{ 5, 3, 9 },
-            .bytes = "ParisLyon",
-            .offset_width = 32,
-            .rows = 3,
-            .expected = CacheError.DecreasingEnds,
         },
         .{
             .name = "error_last_end_before_bytes_end",
