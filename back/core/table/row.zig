@@ -1,3 +1,5 @@
+const Value = @import("value.zig").Value;
+
 pub const Row = struct {
-    values: []const []const u8,
+    values: []const Value,
 };

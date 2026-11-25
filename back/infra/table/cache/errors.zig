@@ -5,6 +5,7 @@ pub const CacheError = error{
     InvalidOffsetWidth,
     PathIsNotAbsolute,
     SizeMismatch,
+    MaskSizeMismatch,
     LastEndMismatch,
     TooManyRows,
     Incomplete,

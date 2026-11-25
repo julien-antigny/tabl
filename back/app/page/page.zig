@@ -1,6 +1,7 @@
 const std = @import("std");
 const Diagnostics = @import("../../core/diagnostic.zig").Diagnostics;
 const Row = @import("../../core/table/row.zig").Row;
+const Value = @import("../../core/table/value.zig").Value;
 const table_port = @import("../../core/table/table.zig");
 const Table = table_port.Table;
 const Freshness = table_port.Freshness;
@@ -11,7 +12,7 @@ const PageError = @import("errors.zig").PageError;
 pub const Result = struct {
     names: []const []const u8,
     rows: []const Row,
-    cells: []const []const u8,
+    cells: []const Value,
     first_row: u64,
     total_rows: u32,
     freshness: Freshness,
@@ -46,12 +47,12 @@ pub const Page = struct {
 
         const rows = try allocator.alloc(Row, count);
         errdefer allocator.free(rows);
-        const cells = try allocator.alloc([]const u8, count * columns);
+        const cells = try allocator.alloc(Value, count * columns);
 
         for (rows, 0..) |*row, index| {
             const row_values = cells[index * columns ..][0..columns];
-            for (row_values, 0..) |*text, column| {
-                text.* = self.table.value(@intCast(start + index), column);
+            for (row_values, 0..) |*cell, column| {
+                cell.* = self.table.value(@intCast(start + index), column);
             }
             row.* = .{ .values = row_values };
         }
@@ -79,10 +80,10 @@ fn fail(err: TableError, diagnostics: *Diagnostics) PageError {
 
 test "run" {
     const all_rows = [_]Row{
-        .{ .values = &.{ "Alice", "Paris" } },
-        .{ .values = &.{ "Bob", "Lyon" } },
-        .{ .values = &.{ "Carol", "Nantes" } },
-        .{ .values = &.{ "Dan", "Lille" } },
+        .{ .values = &.{ .{ .text = "Alice" }, .{ .text = "Paris" } } },
+        .{ .values = &.{ .{ .text = "Bob" }, .empty } },
+        .{ .values = &.{ .{ .text = "Carol" }, .{ .text = "Nantes" } } },
+        .{ .values = &.{ .{ .text = "Dan" }, .{ .text = "Lille" } } },
     };
 
     const Case = struct {
@@ -114,7 +115,7 @@ test "run" {
         try std.testing.expectEqual(2, result.names.len);
         try std.testing.expectEqual(case.expected.len, result.rows.len);
         for (case.expected, result.rows) |name, row| {
-            try std.testing.expectEqualStrings(name, row.values[0]);
+            try std.testing.expectEqualDeep(Value{ .text = name }, row.values[0]);
         }
     }
 }

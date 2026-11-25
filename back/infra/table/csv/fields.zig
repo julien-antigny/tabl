@@ -2,6 +2,7 @@ const std = @import("std");
 const CsvError = @import("errors.zig").CsvError;
 
 pub const Field = struct {
+    quoted: bool = false,
     text: []const u8,
     has_escaped_quotes: bool = false,
 };
@@ -54,6 +55,7 @@ pub const Fields = struct {
             return .{
                 .text = self.text[start..index],
                 .has_escaped_quotes = has_escaped_quotes,
+                .quoted = true,
             };
         }
 
@@ -111,7 +113,7 @@ test "next" {
             .name = "ok_quoted_with_separator",
             .text = "\"Paris, France\",x",
             .expected = &.{
-                .{ .text = "Paris, France" },
+                .{ .text = "Paris, France", .quoted = true },
                 .{ .text = "x" },
             },
         },
@@ -119,7 +121,7 @@ test "next" {
             .name = "ok_escaped_quotes",
             .text = "\"he said \"\"yes\"\"\",b",
             .expected = &.{
-                .{ .text = "he said \"\"yes\"\"", .has_escaped_quotes = true },
+                .{ .text = "he said \"\"yes\"\"", .has_escaped_quotes = true, .quoted = true },
                 .{ .text = "b" },
             },
         },
@@ -127,7 +129,7 @@ test "next" {
             .name = "ok_newline_in_quotes",
             .text = "\"x\ny\",z",
             .expected = &.{
-                .{ .text = "x\ny" },
+                .{ .text = "x\ny", .quoted = true },
                 .{ .text = "z" },
             },
         },
@@ -136,14 +138,14 @@ test "next" {
             .text = "a,\"b\"",
             .expected = &.{
                 .{ .text = "a" },
-                .{ .text = "b" },
+                .{ .text = "b", .quoted = true },
             },
         },
         .{
             .name = "ok_quoted_empty",
             .text = "\"\",b",
             .expected = &.{
-                .{ .text = "" },
+                .{ .text = "", .quoted = true },
                 .{ .text = "b" },
             },
         },
@@ -168,7 +170,7 @@ test "next" {
             .name = "ok_quoted_then_trailing_separator",
             .text = "\"a\",",
             .expected = &.{
-                .{ .text = "a" },
+                .{ .text = "a", .quoted = true },
                 .{ .text = "" },
             },
         },
@@ -189,6 +191,7 @@ test "next" {
             const field = (try fields.next()).?;
             try std.testing.expectEqualStrings(expected.text, field.text);
             try std.testing.expectEqual(expected.has_escaped_quotes, field.has_escaped_quotes);
+            try std.testing.expectEqual(expected.quoted, field.quoted);
         }
         try std.testing.expect(try fields.next() == null);
     }

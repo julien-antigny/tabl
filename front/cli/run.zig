@@ -94,7 +94,7 @@ pub fn page(
     }
     try err_out.flush();
 
-    try printValues(out, result.names);
+    try printNames(out, result.names);
     for (result.rows) |row| {
         try printValues(out, row.values);
     }
@@ -113,10 +113,21 @@ pub fn page(
     }
 }
 
-fn printValues(out: *std.Io.Writer, values: []const []const u8) !void {
+fn printNames(out: *std.Io.Writer, names: []const []const u8) !void {
+    for (names, 0..) |name, index| {
+        if (index > 0) try out.writeByte('\t');
+        try out.writeAll(name);
+    }
+    try out.writeByte('\n');
+}
+
+fn printValues(out: *std.Io.Writer, values: []const tabl.Value) !void {
     for (values, 0..) |value, index| {
         if (index > 0) try out.writeByte('\t');
-        try out.writeAll(value);
+        switch (value) {
+            .empty => {},
+            .text => |text| try out.writeAll(text),
+        }
     }
     try out.writeByte('\n');
 }
