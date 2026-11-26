@@ -1,5 +1,4 @@
 const std = @import("std");
-const isDigits = @import("parse_number.zig").isDigits;
 const CalendarDate = @import("calendar.zig").CalendarDate;
 
 /// The date formats recognized, all 10 characters long.
@@ -89,9 +88,14 @@ pub fn parseDate(text: []const u8, format: DateFormat) ?i32 {
     return date.toDays();
 }
 
+/// Reads 2 or 4 digits, in a single pass.
 fn numberOf(digits: []const u8) ?u16 {
-    if (!isDigits(digits)) return null;
-    return std.fmt.parseInt(u16, digits, 10) catch null;
+    var number: u16 = 0;
+    for (digits) |char| {
+        if (!std.ascii.isDigit(char)) return null;
+        number = number * 10 + (char - '0');
+    }
+    return number;
 }
 
 test "parseDate" {

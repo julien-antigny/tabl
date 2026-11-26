@@ -41,11 +41,12 @@ pub const Candidates = struct {
     fn observe(self: *Candidates, text: []const u8) void {
         self.seen = true;
 
-        if (self.types.contains(.integer) and parse_number.parseInteger(text) == null) {
+        const is_integer = self.types.contains(.integer) and parse_number.parseInteger(text) != null;
+        if (!is_integer) {
             self.types.remove(.integer);
         }
 
-        if (self.types.contains(.decimal) and parse_number.parseDecimal(text) == null) {
+        if (!is_integer and self.types.contains(.decimal) and parse_number.parseDecimal(text) == null) {
             self.types.remove(.decimal);
         }
 

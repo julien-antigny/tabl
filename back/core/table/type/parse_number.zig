@@ -58,7 +58,7 @@ fn isIntegerText(text: []const u8) bool {
     return isDigits(digits);
 }
 
-pub fn isDigits(text: []const u8) bool {
+fn isDigits(text: []const u8) bool {
     for (text) |char| {
         if (!std.ascii.isDigit(char)) return false;
     }
