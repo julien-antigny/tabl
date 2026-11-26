@@ -1,6 +1,7 @@
 const std = @import("std");
 const Value = @import("../value.zig").Value;
 const ColumnType = @import("type.zig").ColumnType;
+const DecimalMark = @import("type.zig").DecimalMark;
 const parseInteger = @import("parse_number.zig").parseInteger;
 const parseDecimal = @import("parse_number.zig").parseDecimal;
 const parseBoolean = @import("parse_boolean.zig").parseBoolean;
@@ -9,8 +10,9 @@ const parseDate = @import("parse_date.zig").parseDate;
 /// Turns a value read from the source into a value of its column type.
 ///
 /// `value` is `.empty` or `.text`, and its text fits `column_type`:
-/// inference has seen it. Any other call is a programming error.
-pub fn convert(value: Value, column_type: ColumnType) Value {
+/// inference has seen it, with the same `decimal_mark`.
+/// Any other call is a programming error.
+pub fn convert(value: Value, column_type: ColumnType, decimal_mark: DecimalMark) Value {
     const text = switch (value) {
         .empty => return .empty,
         .text => |text| text,
@@ -19,7 +21,7 @@ pub fn convert(value: Value, column_type: ColumnType) Value {
 
     return switch (column_type) {
         .integer => .{ .integer = parseInteger(text).? },
-        .decimal => .{ .decimal = parseDecimal(text).? },
+        .decimal => .{ .decimal = parseDecimal(text, decimal_mark).? },
         .boolean => .{ .boolean = parseBoolean(text).? },
         .date => |format| .{ .date = parseDate(text, format).? },
         .text => value,
@@ -31,6 +33,7 @@ test "convert" {
         name: []const u8,
         value: Value,
         column_type: ColumnType,
+        decimal_mark: DecimalMark = .point,
         expected: Value,
     };
 
@@ -38,6 +41,7 @@ test "convert" {
         .{ .name = "ok_empty", .value = .empty, .column_type = .integer, .expected = .empty },
         .{ .name = "ok_integer", .value = .{ .text = "-42" }, .column_type = .integer, .expected = .{ .integer = -42 } },
         .{ .name = "ok_decimal", .value = .{ .text = "1.5" }, .column_type = .decimal, .expected = .{ .decimal = 1.5 } },
+        .{ .name = "ok_comma_decimal", .value = .{ .text = "1,5" }, .column_type = .decimal, .decimal_mark = .comma, .expected = .{ .decimal = 1.5 } },
         .{ .name = "ok_integer_in_decimal_column", .value = .{ .text = "10" }, .column_type = .decimal, .expected = .{ .decimal = 10 } },
         .{ .name = "ok_boolean", .value = .{ .text = "TRUE" }, .column_type = .boolean, .expected = .{ .boolean = true } },
         .{ .name = "ok_date", .value = .{ .text = "02/01/1970" }, .column_type = .{ .date = .day_month_year_slash }, .expected = .{ .date = 1 } },
@@ -47,6 +51,6 @@ test "convert" {
 
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.name});
-        try std.testing.expectEqualDeep(case.expected, convert(case.value, case.column_type));
+        try std.testing.expectEqualDeep(case.expected, convert(case.value, case.column_type, case.decimal_mark));
     }
 }

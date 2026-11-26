@@ -1,4 +1,5 @@
 const std = @import("std");
+const tabl = @import("tabl");
 const CliError = @import("errors.zig").CliError;
 
 pub const Command = union(enum) {
@@ -14,6 +15,7 @@ pub const ScanCommand = struct {
 pub const ImportCommand = struct {
     csv_path: []const u8,
     cache_path: []const u8,
+    decimal_mark: tabl.DecimalMark = .point,
 };
 
 pub const PageCommand = struct {
@@ -33,7 +35,17 @@ pub fn parse(args: []const [:0]const u8) CliError!Command {
 
     if (std.mem.eql(u8, name, "import")) {
         if (args.len < 4) return CliError.MissingArguments;
-        return .{ .import = .{ .csv_path = args[2], .cache_path = args[3] } };
+        var import: ImportCommand = .{
+            .csv_path = args[2],
+            .cache_path = args[3],
+        };
+        for (args[4..]) |option| {
+            if (!std.mem.eql(u8, option, "--decimal-comma")) {
+                return CliError.UnknownOption;
+            }
+            import.decimal_mark = .comma;
+        }
+        return .{ .import = import };
     }
 
     if (std.mem.eql(u8, name, "page")) {
@@ -53,6 +65,7 @@ pub fn messageOf(err: CliError) []const u8 {
         CliError.UnknownCommand => "unknown command",
         CliError.MissingArguments => "missing arguments",
         CliError.InvalidNumber => "invalid number",
+        CliError.UnknownOption => "unknown option",
     };
 }
 
@@ -86,6 +99,23 @@ test "parse" {
             },
         },
         .{
+            .name = "ok_import_decimal_comma",
+            .args = &.{
+                "tabl",
+                "import",
+                "sales.csv",
+                "sales.tabl",
+                "--decimal-comma",
+            },
+            .expected = .{
+                .import = .{
+                    .csv_path = "sales.csv",
+                    .cache_path = "sales.tabl",
+                    .decimal_mark = .comma,
+                },
+            },
+        },
+        .{
             .name = "ok_page",
             .args = &.{ "tabl", "page", "sales.tabl", "40", "20" },
             .expected = .{
@@ -110,6 +140,11 @@ test "parse" {
             .name = "error_import_without_cache",
             .args = &.{ "tabl", "import", "sales.csv" },
             .expected = CliError.MissingArguments,
+        },
+        .{
+            .name = "error_import_unknown_option",
+            .args = &.{ "tabl", "import", "sales.csv", "sales.tabl", "--comma" },
+            .expected = CliError.UnknownOption,
         },
         .{
             .name = "error_page_not_a_number",
