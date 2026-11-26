@@ -1,6 +1,7 @@
 const std = @import("std");
 const Diagnostics = @import("../../../core/diagnostic.zig").Diagnostics;
 const Header = @import("../../../core/table/header.zig").Header;
+const ColumnType = @import("../../../core/table/type/type.zig").ColumnType;
 const Row = @import("../../../core/table/row.zig").Row;
 const Value = @import("../../../core/table/value.zig").Value;
 const Writer = @import("../../../core/table/writer.zig").Writer;
@@ -87,8 +88,10 @@ pub const CacheWriter = struct {
     fn header(
         ptr: *anyopaque,
         value: Header,
+        types: []const ColumnType,
         diagnostics: *Diagnostics,
     ) TableError!void {
+        _ = types;
         const self: *CacheWriter = @ptrCast(@alignCast(ptr));
         std.debug.assert(self.cache_dir == null);
         self.prepare(value.names) catch |err| return self.fail(err, diagnostics);
@@ -406,7 +409,10 @@ fn writeTable(
 ) !void {
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
-    try table_writer.header(.{ .names = names }, &diagnostics);
+    const types = try testing.allocator.alloc(ColumnType, names.len);
+    defer testing.allocator.free(types);
+    @memset(types, .text);
+    try table_writer.header(.{ .names = names }, types, &diagnostics);
     for (rows) |values| {
         try table_writer.row(.{ .values = values }, &diagnostics);
     }
@@ -499,7 +505,7 @@ test "writes no meta.json until finish" {
     defer cache.close();
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
-    try table_writer.header(.{ .names = &.{"city"} }, &diagnostics);
+    try table_writer.header(.{ .names = &.{"city"} }, &.{.text}, &diagnostics);
     try table_writer.row(.{ .values = &.{.{ .text = "Paris" }} }, &diagnostics);
 
     try testing.expectError(
@@ -597,7 +603,7 @@ test "fails when the source is missing" {
 
     try testing.expectError(
         error.NotFound,
-        cache.writer().header(.{ .names = &.{"city"} }, &diagnostics),
+        cache.writer().header(.{ .names = &.{"city"} }, &.{.text}, &diagnostics),
     );
     try testing.expectEqual(1, diagnostics.size);
     try testing.expectEqualStrings(

@@ -3,7 +3,7 @@ const Header = @import("header.zig").Header;
 const Row = @import("row.zig").Row;
 const TableError = @import("errors.zig").TableError;
 
-/// Reads a table once, from its first row to its last.
+/// Reads a table from its first row to its last, as many times as needed.
 ///
 /// The reader does not own its lifecycle: whoever created the adapter
 /// behind it opens and closes the underlying resources.
@@ -20,6 +20,7 @@ pub const Reader = struct {
             ptr: *anyopaque,
             diagnostics: *Diagnostics,
         ) TableError!?Row,
+        rewind: *const fn (ptr: *anyopaque) void,
     };
 
     /// Returns the column names.
@@ -39,5 +40,12 @@ pub const Reader = struct {
     /// On error, at least one entry is pushed onto `diagnostics`.
     pub fn next(self: Reader, diagnostics: *Diagnostics) TableError!?Row {
         return self.vtable.next(self.ptr, diagnostics);
+    }
+
+    /// Goes back to the first row: the next call to `next` returns it again.
+    ///
+    /// Rows returned before become invalid; the header stays valid.
+    pub fn rewind(self: Reader) void {
+        self.vtable.rewind(self.ptr);
     }
 };

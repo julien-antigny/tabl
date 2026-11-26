@@ -24,6 +24,7 @@ pub const CsvReader = struct {
     bytes: []const u8 = "",
     opened: bool = false,
     records: Records = .{ .bytes = "" },
+    first_row: Records = .{ .bytes = "" },
     separator: Separator = .comma,
     names: std.ArrayList([]const u8) = .empty,
     name_bytes: std.ArrayList(u8) = .empty,
@@ -68,7 +69,7 @@ pub const CsvReader = struct {
     pub fn reader(self: *CsvReader) Reader {
         return .{
             .ptr = self,
-            .vtable = &.{ .header = header, .next = next },
+            .vtable = &.{ .header = header, .next = next, .rewind = rewind },
         };
     }
 
@@ -81,6 +82,12 @@ pub const CsvReader = struct {
     fn next(ptr: *anyopaque, diagnostics: *Diagnostics) TableError!?Row {
         const self: *CsvReader = @ptrCast(@alignCast(ptr));
         return self.nextRow() catch |err| self.fail(err, diagnostics);
+    }
+
+    fn rewind(ptr: *anyopaque) void {
+        const self: *CsvReader = @ptrCast(@alignCast(ptr));
+        if (!self.header_loaded) return;
+        self.records = self.first_row;
     }
 
     fn fail(self: *CsvReader, err: anyerror, diagnostics: *Diagnostics) TableError {
@@ -130,6 +137,7 @@ pub const CsvReader = struct {
             try self.splitNames(record.text, &self.names, &self.name_bytes);
         }
 
+        self.first_row = self.records;
         self.header_loaded = true;
     }
 
@@ -444,6 +452,55 @@ test "loadHeader twice reads the header once" {
     try reader.loadHeader();
 
     try std.testing.expectEqual(2, reader.names.items.len);
+}
+
+test "rewind reads the rows again" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(
+        io,
+        .{ .sub_path = "table.csv", .data = "a,b\n1,2\n3,4\n" },
+    );
+
+    var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
+    defer csv.close();
+    const reader = csv.reader();
+    var diagnostics: Diagnostics = .{};
+
+    _ = try reader.next(&diagnostics);
+    _ = try reader.next(&diagnostics);
+    try std.testing.expectEqual(null, try reader.next(&diagnostics));
+
+    reader.rewind();
+    const row = (try reader.next(&diagnostics)).?;
+    try std.testing.expectEqualDeep(
+        &[_]Value{ .{ .text = "1" }, .{ .text = "2" } },
+        row.values,
+    );
+    try std.testing.expectEqual(2, csv.line);
+}
+
+test "rewind before reading changes nothing" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(
+        io,
+        .{ .sub_path = "table.csv", .data = "a,b\n1,2\n" },
+    );
+
+    var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
+    defer csv.close();
+    const reader = csv.reader();
+    var diagnostics: Diagnostics = .{};
+
+    reader.rewind();
+    const row = (try reader.next(&diagnostics)).?;
+    try std.testing.expectEqualDeep(
+        &[_]Value{ .{ .text = "1" }, .{ .text = "2" } },
+        row.values,
+    );
 }
 
 test "nextRow" {

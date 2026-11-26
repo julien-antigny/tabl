@@ -273,16 +273,33 @@ fn translate(err: anyerror) TableError {
 
 const testing = std.testing;
 const CacheWriter = @import("writer.zig").CacheWriter;
+const ColumnType = @import("../../../core/table/type/type.zig").ColumnType;
 
-fn importTable(dir: std.Io.Dir, names: []const []const u8, rows: []const []const Value) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.csv", .data = "city,age\nParis,31\n" });
+fn importTable(
+    dir: std.Io.Dir,
+    names: []const []const u8,
+    rows: []const []const Value,
+) !void {
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.csv", .data = "city,age\nParis,31\n" },
+    );
 
-    var cache: CacheWriter = .new(testing.io, testing.allocator, dir, "sales.tabl", "sales.csv");
+    var cache: CacheWriter = .new(
+        testing.io,
+        testing.allocator,
+        dir,
+        "sales.tabl",
+        "sales.csv",
+    );
     defer cache.close();
 
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
-    try table_writer.header(.{ .names = names }, &diagnostics);
+    const types = try testing.allocator.alloc(ColumnType, names.len);
+    defer testing.allocator.free(types);
+    @memset(types, .text);
+    try table_writer.header(.{ .names = names }, types, &diagnostics);
     for (rows) |values| {
         try table_writer.row(.{ .values = values }, &diagnostics);
     }
@@ -298,7 +315,12 @@ test "reads back every value" {
         &.{ .{ .text = "Lyon" }, .{ .text = "" } },
     });
 
-    var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+    var cache: CacheTable = .new(
+        testing.io,
+        testing.allocator,
+        tmp.dir,
+        "sales.tabl",
+    );
     defer cache.close();
     const table = cache.table();
     var diagnostics: Diagnostics = .{};
@@ -321,12 +343,20 @@ test "reads a table without rows" {
     defer tmp.cleanup();
     try importTable(tmp.dir, &.{ "city", "age" }, &.{});
 
-    var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+    var cache: CacheTable = .new(
+        testing.io,
+        testing.allocator,
+        tmp.dir,
+        "sales.tabl",
+    );
     defer cache.close();
     var diagnostics: Diagnostics = .{};
 
     try testing.expectEqual(0, try cache.table().rowCount(&diagnostics));
-    try testing.expectEqual(2, (try cache.table().header(&diagnostics)).names.len);
+    try testing.expectEqual(
+        2,
+        (try cache.table().header(&diagnostics)).names.len,
+    );
 }
 
 fn removeCache(dir: std.Io.Dir) !void {
@@ -356,7 +386,10 @@ fn removeColumnFile(dir: std.Io.Dir) !void {
 }
 
 fn truncateEnds(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 5, 0, 0, 0 } });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 5, 0, 0, 0 } },
+    );
 }
 
 fn removeEmptyMask(dir: std.Io.Dir) !void {
@@ -364,11 +397,17 @@ fn removeEmptyMask(dir: std.Io.Dir) !void {
 }
 
 fn extendEmptyMask(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/1.empty", .data = &.{ 0, 0 } });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/1.empty", .data = &.{ 0, 0 } },
+    );
 }
 
 fn extendBytes(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.bytes", .data = "ParisLyonNice" });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/0.bytes", .data = "ParisLyonNice" },
+    );
 }
 
 test "refuses a damaged cache" {
@@ -457,15 +496,32 @@ test "refuses a damaged cache" {
         });
         try case.damage(tmp.dir);
 
-        var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+        var cache: CacheTable = .new(
+            testing.io,
+            testing.allocator,
+            tmp.dir,
+            "sales.tabl",
+        );
         defer cache.close();
         var diagnostics: Diagnostics = .{};
 
-        try testing.expectError(case.expected, cache.table().header(&diagnostics));
-        try testing.expectError(case.expected, cache.table().rowCount(&diagnostics));
+        try testing.expectError(
+            case.expected,
+            cache.table().header(&diagnostics),
+        );
+        try testing.expectError(
+            case.expected,
+            cache.table().rowCount(&diagnostics),
+        );
         try testing.expectEqual(2, diagnostics.size);
-        try testing.expectEqualStrings(case.message, diagnostics.last().?.message);
-        try testing.expectEqualStrings(case.path, diagnostics.last().?.location.?.path);
+        try testing.expectEqualStrings(
+            case.message,
+            diagnostics.last().?.message,
+        );
+        try testing.expectEqualStrings(
+            case.path,
+            diagnostics.last().?.location.?.path,
+        );
     }
 }
 
@@ -477,9 +533,21 @@ test "freshness" {
     };
 
     const cases = [_]Case{
-        .{ .name = "ok_fresh", .change = null, .expected = .fresh },
-        .{ .name = "ok_stale", .change = "city,age\nParis,31\nLyon,45\n", .expected = .stale },
-        .{ .name = "ok_source_missing", .change = "", .expected = .source_missing },
+        .{
+            .name = "ok_fresh",
+            .change = null,
+            .expected = .fresh,
+        },
+        .{
+            .name = "ok_stale",
+            .change = "city,age\nParis,31\nLyon,45\n",
+            .expected = .stale,
+        },
+        .{
+            .name = "ok_source_missing",
+            .change = "",
+            .expected = .source_missing,
+        },
     };
 
     for (cases) |case| {
@@ -493,14 +561,25 @@ test "freshness" {
             if (data.len == 0) {
                 try tmp.dir.deleteFile(testing.io, "sales.csv");
             } else {
-                try tmp.dir.writeFile(testing.io, .{ .sub_path = "sales.csv", .data = data });
+                try tmp.dir.writeFile(
+                    testing.io,
+                    .{ .sub_path = "sales.csv", .data = data },
+                );
             }
         }
 
-        var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+        var cache: CacheTable = .new(
+            testing.io,
+            testing.allocator,
+            tmp.dir,
+            "sales.tabl",
+        );
         defer cache.close();
         var diagnostics: Diagnostics = .{};
 
-        try testing.expectEqual(case.expected, try cache.table().freshness(&diagnostics));
+        try testing.expectEqual(
+            case.expected,
+            try cache.table().freshness(&diagnostics),
+        );
     }
 }
