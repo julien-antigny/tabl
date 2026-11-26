@@ -5,11 +5,13 @@ const Row = @import("row.zig").Row;
 const Writer = @import("writer.zig").Writer;
 const TableError = @import("errors.zig").TableError;
 const Value = @import("value.zig").Value;
+const ColumnType = @import("type/type.zig").ColumnType;
 
 pub const MockWriter = struct {
     arena: std.heap.ArenaAllocator,
     failure: ?Failure = null,
     names: []const []const u8 = &.{},
+    types: []const ColumnType = &.{},
     rows: std.ArrayList([]const Value) = .empty,
     started: bool = false,
     finished: bool = false,
@@ -39,13 +41,16 @@ pub const MockWriter = struct {
     fn header(
         ptr: *anyopaque,
         value: Header,
+        types: []const ColumnType,
         diagnostics: *Diagnostics,
     ) TableError!void {
         const self: *MockWriter = @ptrCast(@alignCast(ptr));
         std.debug.assert(!self.started);
+        std.debug.assert(types.len == value.names.len);
 
         try self.failOn(.header, diagnostics);
         self.names = try self.copyTexts(value.names);
+        self.types = try self.arena.allocator().dupe(ColumnType, types);
         self.started = true;
     }
 
@@ -108,10 +113,10 @@ pub const MockWriter = struct {
         const allocator = self.arena.allocator();
         const copies = try allocator.alloc(Value, values.len);
 
-        for (values, copies) |text, *copied| {
-            copied.* = switch (text) {
-                .empty => .empty,
-                .text => |bytes| .{ .text = try allocator.dupe(u8, bytes) },
+        for (values, copies) |value, *copied| {
+            copied.* = switch (value) {
+                .text => |text| .{ .text = try allocator.dupe(u8, text) },
+                .empty, .integer, .decimal, .boolean, .date => value,
             };
         }
 

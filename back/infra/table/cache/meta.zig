@@ -1,5 +1,6 @@
 const std = @import("std");
 const CacheError = @import("errors.zig").CacheError;
+const Type = @import("../../../core/table/type/type.zig").Type;
 
 pub const file_name = "meta.json";
 pub const format_name = "tabl-cache";
@@ -13,7 +14,8 @@ pub const Source = struct {
 
 pub const Column = struct {
     name: []const u8,
-    offset_width: u32,
+    type: Type,
+    offset_width: ?u32 = null,
 };
 
 pub const Meta = struct {
@@ -40,7 +42,10 @@ pub fn parse(
 }
 
 pub fn write(meta: Meta, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try std.json.Stringify.value(meta, .{ .whitespace = .indent_2 }, writer);
+    try std.json.Stringify.value(meta, .{
+        .whitespace = .indent_2,
+        .emit_null_optional_fields = false,
+    }, writer);
     try writer.writeByte('\n');
 }
 
@@ -67,7 +72,10 @@ fn identify(allocator: std.mem.Allocator, bytes: []const u8) CacheError!void {
 
 fn check(meta: Meta) CacheError!void {
     for (meta.columns) |column| {
-        if (column.offset_width != 32 and column.offset_width != 64) {
+        if (column.type == .text) {
+            const width = column.offset_width orelse return CacheError.InvalidOffsetWidth;
+            if (width != 32 and width != 64) return CacheError.InvalidOffsetWidth;
+        } else if (column.offset_width != null) {
             return CacheError.InvalidOffsetWidth;
         }
     }
@@ -95,8 +103,8 @@ test "check" {
             .modified_ns = 0,
         },
         .columns = &.{
-            .{ .name = "city", .offset_width = 32 },
-            .{ .name = "notes", .offset_width = 64 },
+            .{ .name = "city", .type = .text, .offset_width = 32 },
+            .{ .name = "notes", .type = .text, .offset_width = 64 },
         },
     };
 
@@ -108,8 +116,26 @@ test "check" {
 
     var bad_width = valid;
     bad_width.columns = &.{
-        .{ .name = "city", .offset_width = 32 },
-        .{ .name = "notes", .offset_width = 16 },
+        .{ .name = "city", .type = .text, .offset_width = 32 },
+        .{ .name = "notes", .type = .text, .offset_width = 16 },
+    };
+
+    var text_without_width = valid;
+    text_without_width.columns = &.{
+        .{ .name = "city", .type = .text },
+    };
+
+    var integer_with_width = valid;
+    integer_with_width.columns = &.{
+        .{ .name = "age", .type = .integer, .offset_width = 32 },
+    };
+
+    var typed_columns = valid;
+    typed_columns.columns = &.{
+        .{ .name = "age", .type = .integer },
+        .{ .name = "price", .type = .decimal },
+        .{ .name = "paid", .type = .boolean },
+        .{ .name = "day", .type = .date },
     };
 
     var no_columns = valid;
@@ -128,6 +154,21 @@ test "check" {
             .name = "ok_no_columns",
             .meta = no_columns,
             .expected = null,
+        },
+        .{
+            .name = "ok_typed_columns_without_width",
+            .meta = typed_columns,
+            .expected = null,
+        },
+        .{
+            .name = "error_text_without_offset_width",
+            .meta = text_without_width,
+            .expected = CacheError.InvalidOffsetWidth,
+        },
+        .{
+            .name = "error_integer_with_offset_width",
+            .meta = integer_with_width,
+            .expected = CacheError.InvalidOffsetWidth,
         },
         .{
             .name = "error_invalid_offset_width",
@@ -160,8 +201,9 @@ test "parse reads a valid meta" {
         \\  "rows": 2,
         \\  "source": { "path": "/data/sales.csv", "size": 42, "modified_ns": -5 },
         \\  "columns": [
-        \\    { "name": "city", "offset_width": 32 },
-        \\    { "name": "notes", "offset_width": 64 }
+        \\    { "name": "city", "type": "text", "offset_width": 32 },
+        \\    { "name": "notes", "type": "text", "offset_width": 64 },
+        \\    { "name": "age", "type": "integer" }
         \\  ]
         \\}
     ;
@@ -174,9 +216,11 @@ test "parse reads a valid meta" {
     try std.testing.expectEqualStrings("/data/sales.csv", meta.source.path);
     try std.testing.expectEqual(42, meta.source.size);
     try std.testing.expectEqual(-5, meta.source.modified_ns);
-    try std.testing.expectEqual(2, meta.columns.len);
+    try std.testing.expectEqual(3, meta.columns.len);
     try std.testing.expectEqualStrings("notes", meta.columns[1].name);
     try std.testing.expectEqual(64, meta.columns[1].offset_width);
+    try std.testing.expectEqual(.integer, meta.columns[2].type);
+    try std.testing.expectEqual(null, meta.columns[2].offset_width);
 }
 
 test "parse fails" {
@@ -252,7 +296,16 @@ test "parse fails" {
             .name = "error_column_without_name",
             .bytes =
             \\{ "format": "tabl-cache", "version": 1, "rows": 0,
-            \\  "columns": [ { "offset_width": 32 } ],
+            \\  "columns": [ { "type": "text", "offset_width": 32 } ],
+            \\  "source": { "path": "/a.csv", "size": 0, "modified_ns": 0 } }
+            ,
+            .expected = CacheError.InvalidMeta,
+        },
+        .{
+            .name = "error_unknown_type",
+            .bytes =
+            \\{ "format": "tabl-cache", "version": 1, "rows": 0,
+            \\  "columns": [ { "name": "city", "type": "color" } ],
             \\  "source": { "path": "/a.csv", "size": 0, "modified_ns": 0 } }
             ,
             .expected = CacheError.InvalidMeta,
@@ -277,7 +330,7 @@ test "parse fails" {
             .name = "error_check_after_parse",
             .bytes =
             \\{ "format": "tabl-cache", "version": 1, "rows": 0,
-            \\  "columns": [ { "name": "city", "offset_width": 16 } ],
+            \\  "columns": [ { "name": "city", "type": "text", "offset_width": 16 } ],
             \\  "source": { "path": "/a.csv", "size": 0, "modified_ns": 0 } }
             ,
             .expected = CacheError.InvalidOffsetWidth,
@@ -304,8 +357,9 @@ test "write then parse gives the same meta" {
             .modified_ns = 1764001234123456789,
         },
         .columns = &.{
-            .{ .name = "city", .offset_width = 32 },
-            .{ .name = "say \"hi\"", .offset_width = 64 },
+            .{ .name = "city", .type = .text, .offset_width = 32 },
+            .{ .name = "say \"hi\"", .type = .text, .offset_width = 64 },
+            .{ .name = "age", .type = .integer },
         },
     };
 
@@ -317,4 +371,5 @@ test "write then parse gives the same meta" {
     defer parsed.deinit();
 
     try std.testing.expectEqualDeep(meta, parsed.value);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "null") == null);
 }

@@ -2,6 +2,7 @@ const Diagnostics = @import("../diagnostic.zig").Diagnostics;
 const Header = @import("header.zig").Header;
 const Row = @import("row.zig").Row;
 const TableError = @import("errors.zig").TableError;
+const ColumnType = @import("type/type.zig").ColumnType;
 
 /// Writes a table once, from its header to its last row.
 ///
@@ -18,6 +19,7 @@ pub const Writer = struct {
         header: *const fn (
             ptr: *anyopaque,
             header: Header,
+            types: []const ColumnType,
             diagnostics: *Diagnostics,
         ) TableError!void,
         row: *const fn (
@@ -31,17 +33,21 @@ pub const Writer = struct {
         ) TableError!void,
     };
 
-    /// Starts the table with its column names.
+    /// Starts the table with its column names and the type of each column.
     ///
-    /// The names only need to stay valid during the call:
+    /// `types` has one entry per name. Every value written later in a column
+    /// is `.empty` or a value of the column type: `.text` for a text column,
+    /// `.integer` for an integer column, and so on.
+    /// The names and types only need to stay valid during the call:
     /// the writer copies what it keeps.
     /// On error, at least one entry is pushed onto `diagnostics`.
     pub fn header(
         self: Writer,
         value: Header,
+        types: []const ColumnType,
         diagnostics: *Diagnostics,
     ) TableError!void {
-        return self.vtable.header(self.ptr, value, diagnostics);
+        return self.vtable.header(self.ptr, value, types, diagnostics);
     }
 
     /// Appends one row.

@@ -8,7 +8,9 @@ const TableError = @import("../../../core/table/errors.zig").TableError;
 const Value = @import("../../../core/table/value.zig").Value;
 const CacheError = @import("errors.zig").CacheError;
 const meta = @import("meta.zig");
-const TextColumn = @import("column.zig").TextColumn;
+const EmptyMask = @import("empty_mask.zig").EmptyMask;
+const TextColumn = @import("text_column.zig").TextColumn;
+const ValuesColumn = @import("values_column.zig").ValuesColumn;
 
 const page_align = std.heap.page_size_min;
 const Bytes = []align(page_align) const u8;
@@ -26,6 +28,22 @@ const MappedFile = struct {
 
 const FileName = [32]u8;
 
+const Column = struct {
+    empty: EmptyMask,
+    data: union(enum) {
+        text: TextColumn,
+        values: ValuesColumn,
+    },
+
+    fn value(self: Column, row: u32) Value {
+        if (self.empty.isEmpty(row)) return .empty;
+        return switch (self.data) {
+            .text => |text| .{ .text = text.text(row) },
+            .values => |values| values.value(row),
+        };
+    }
+};
+
 pub const CacheTable = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -39,7 +57,7 @@ pub const CacheTable = struct {
     names: []const []const u8 = &.{},
     files: []MappedFile = &.{},
     mapped_files: usize = 0,
-    columns: []TextColumn = &.{},
+    columns: []Column = &.{},
     current_file: []const u8 = "",
     current_file_buffer: FileName = undefined,
     location_buffer: [512]u8 = undefined,
@@ -147,22 +165,35 @@ pub const CacheTable = struct {
         self.names = names;
 
         self.files = try arena.alloc(MappedFile, description.columns.len * 3);
-        self.columns = try arena.alloc(TextColumn, description.columns.len);
-        for (description.columns, self.columns, 0..) |column, *text_column, index| {
-            const ends = try self.mapColumnFile(cache_dir, index, "ends");
-            const bytes = try self.mapColumnFile(cache_dir, index, "bytes");
-            const empty_mask = try self.mapColumnFile(cache_dir, index, "empty");
-            text_column.* = TextColumn.new(
-                ends,
-                bytes,
-                empty_mask,
-                column.offset_width,
-                description.rows,
-            ) catch |err| {
-                self.setCurrentFile(index, if (err == error.MaskSizeMismatch) "empty" else "ends");
-                return err;
-            };
+        self.columns = try arena.alloc(Column, description.columns.len);
+        for (description.columns, self.columns, 0..) |column, *loaded, index| {
+            loaded.* = try self.loadColumn(cache_dir, index, column, description.rows);
         }
+    }
+
+    /// Maps the files of one column and checks their sizes. On error,
+    /// `current_file` names the file at fault.
+    fn loadColumn(
+        self: *CacheTable,
+        cache_dir: std.Io.Dir,
+        index: usize,
+        column: meta.Column,
+        rows: u32,
+    ) !Column {
+        const empty: EmptyMask = try .new(try self.mapColumnFile(cache_dir, index, "empty"), rows);
+
+        if (column.type != .text) {
+            const values = try self.mapColumnFile(cache_dir, index, "values");
+            return .{ .empty = empty, .data = .{ .values = try .new(values, column.type, rows) } };
+        }
+
+        const ends = try self.mapColumnFile(cache_dir, index, "ends");
+        const bytes = try self.mapColumnFile(cache_dir, index, "bytes");
+        const text = TextColumn.new(ends, bytes, column.offset_width.?, rows) catch |err| {
+            self.setCurrentFile(index, "ends");
+            return err;
+        };
+        return .{ .empty = empty, .data = .{ .text = text } };
     }
 
     fn setCurrentFile(self: *CacheTable, index: usize, extension: []const u8) void {
@@ -273,16 +304,31 @@ fn translate(err: anyerror) TableError {
 
 const testing = std.testing;
 const CacheWriter = @import("writer.zig").CacheWriter;
+const ColumnType = @import("../../../core/table/type/type.zig").ColumnType;
 
-fn importTable(dir: std.Io.Dir, names: []const []const u8, rows: []const []const Value) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.csv", .data = "city,age\nParis,31\n" });
+fn importTable(
+    dir: std.Io.Dir,
+    names: []const []const u8,
+    types: []const ColumnType,
+    rows: []const []const Value,
+) !void {
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.csv", .data = "city,age\nParis,31\n" },
+    );
 
-    var cache: CacheWriter = .new(testing.io, testing.allocator, dir, "sales.tabl", "sales.csv");
+    var cache: CacheWriter = .new(
+        testing.io,
+        testing.allocator,
+        dir,
+        "sales.tabl",
+        "sales.csv",
+    );
     defer cache.close();
 
     var diagnostics: Diagnostics = .{};
     const table_writer = cache.writer();
-    try table_writer.header(.{ .names = names }, &diagnostics);
+    try table_writer.header(.{ .names = names }, types, &diagnostics);
     for (rows) |values| {
         try table_writer.row(.{ .values = values }, &diagnostics);
     }
@@ -292,13 +338,18 @@ fn importTable(dir: std.Io.Dir, names: []const []const u8, rows: []const []const
 test "reads back every value" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try importTable(tmp.dir, &.{ "city", "age" }, &.{
+    try importTable(tmp.dir, &.{ "city", "age" }, &.{ .text, .text }, &.{
         &.{ .{ .text = "Paris" }, .{ .text = "31" } },
         &.{ .empty, .{ .text = "45" } },
         &.{ .{ .text = "Lyon" }, .{ .text = "" } },
     });
 
-    var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+    var cache: CacheTable = .new(
+        testing.io,
+        testing.allocator,
+        tmp.dir,
+        "sales.tabl",
+    );
     defer cache.close();
     const table = cache.table();
     var diagnostics: Diagnostics = .{};
@@ -316,17 +367,57 @@ test "reads back every value" {
     try testing.expectEqual(.fresh, try table.freshness(&diagnostics));
 }
 
+test "reads back typed values" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try importTable(
+        tmp.dir,
+        &.{ "age", "price", "paid", "day" },
+        &.{ .integer, .decimal, .boolean, .{ .date = .year_month_day_dash } },
+        &.{
+            &.{ .{ .integer = -31 }, .{ .decimal = 1.5 }, .{ .boolean = true }, .{ .date = 19797 } },
+            &.{ .empty, .empty, .empty, .empty },
+            &.{ .{ .integer = 0 }, .{ .decimal = 0 }, .{ .boolean = false }, .{ .date = -1 } },
+        },
+    );
+
+    var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+    defer cache.close();
+    const table = cache.table();
+    var diagnostics: Diagnostics = .{};
+    try testing.expectEqual(3, try table.rowCount(&diagnostics));
+
+    const expected = [_][4]Value{
+        .{ .{ .integer = -31 }, .{ .decimal = 1.5 }, .{ .boolean = true }, .{ .date = 19797 } },
+        .{ .empty, .empty, .empty, .empty },
+        .{ .{ .integer = 0 }, .{ .decimal = 0 }, .{ .boolean = false }, .{ .date = -1 } },
+    };
+    for (expected, 0..) |values, row| {
+        for (values, 0..) |expected_value, column| {
+            try testing.expectEqualDeep(expected_value, table.value(@intCast(row), column));
+        }
+    }
+}
+
 test "reads a table without rows" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try importTable(tmp.dir, &.{ "city", "age" }, &.{});
+    try importTable(tmp.dir, &.{ "city", "age" }, &.{ .text, .integer }, &.{});
 
-    var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+    var cache: CacheTable = .new(
+        testing.io,
+        testing.allocator,
+        tmp.dir,
+        "sales.tabl",
+    );
     defer cache.close();
     var diagnostics: Diagnostics = .{};
 
     try testing.expectEqual(0, try cache.table().rowCount(&diagnostics));
-    try testing.expectEqual(2, (try cache.table().header(&diagnostics)).names.len);
+    try testing.expectEqual(
+        2,
+        (try cache.table().header(&diagnostics)).names.len,
+    );
 }
 
 fn removeCache(dir: std.Io.Dir) !void {
@@ -352,11 +443,25 @@ fn replaceVersion(dir: std.Io.Dir) !void {
 }
 
 fn removeColumnFile(dir: std.Io.Dir) !void {
-    try dir.deleteFile(testing.io, "sales.tabl/1.bytes");
+    try dir.deleteFile(testing.io, "sales.tabl/0.bytes");
+}
+
+fn removeValues(dir: std.Io.Dir) !void {
+    try dir.deleteFile(testing.io, "sales.tabl/1.values");
+}
+
+fn truncateValues(dir: std.Io.Dir) !void {
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/1.values", .data = &.{ 31, 0, 0, 0, 0, 0, 0, 0 } },
+    );
 }
 
 fn truncateEnds(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 5, 0, 0, 0 } });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/0.ends", .data = &.{ 5, 0, 0, 0 } },
+    );
 }
 
 fn removeEmptyMask(dir: std.Io.Dir) !void {
@@ -364,11 +469,17 @@ fn removeEmptyMask(dir: std.Io.Dir) !void {
 }
 
 fn extendEmptyMask(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/1.empty", .data = &.{ 0, 0 } });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/1.empty", .data = &.{ 0, 0 } },
+    );
 }
 
 fn extendBytes(dir: std.Io.Dir) !void {
-    try dir.writeFile(testing.io, .{ .sub_path = "sales.tabl/0.bytes", .data = "ParisLyonNice" });
+    try dir.writeFile(
+        testing.io,
+        .{ .sub_path = "sales.tabl/0.bytes", .data = "ParisLyonNice" },
+    );
 }
 
 test "refuses a damaged cache" {
@@ -414,7 +525,21 @@ test "refuses a damaged cache" {
             .damage = removeColumnFile,
             .expected = TableError.Malformed,
             .message = "missing column file",
-            .path = "sales.tabl/1.bytes",
+            .path = "sales.tabl/0.bytes",
+        },
+        .{
+            .name = "error_missing_values",
+            .damage = removeValues,
+            .expected = TableError.Malformed,
+            .message = "missing column file",
+            .path = "sales.tabl/1.values",
+        },
+        .{
+            .name = "error_truncated_values",
+            .damage = truncateValues,
+            .expected = TableError.Malformed,
+            .message = "file size does not match the row count",
+            .path = "sales.tabl/1.values",
         },
         .{
             .name = "error_missing_empty_mask",
@@ -451,21 +576,38 @@ test "refuses a damaged cache" {
 
         var tmp = testing.tmpDir(.{});
         defer tmp.cleanup();
-        try importTable(tmp.dir, &.{ "city", "age" }, &.{
-            &.{ .{ .text = "Paris" }, .{ .text = "31" } },
-            &.{ .{ .text = "Lyon" }, .{ .text = "45" } },
+        try importTable(tmp.dir, &.{ "city", "age" }, &.{ .text, .integer }, &.{
+            &.{ .{ .text = "Paris" }, .{ .integer = 31 } },
+            &.{ .{ .text = "Lyon" }, .{ .integer = 45 } },
         });
         try case.damage(tmp.dir);
 
-        var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+        var cache: CacheTable = .new(
+            testing.io,
+            testing.allocator,
+            tmp.dir,
+            "sales.tabl",
+        );
         defer cache.close();
         var diagnostics: Diagnostics = .{};
 
-        try testing.expectError(case.expected, cache.table().header(&diagnostics));
-        try testing.expectError(case.expected, cache.table().rowCount(&diagnostics));
+        try testing.expectError(
+            case.expected,
+            cache.table().header(&diagnostics),
+        );
+        try testing.expectError(
+            case.expected,
+            cache.table().rowCount(&diagnostics),
+        );
         try testing.expectEqual(2, diagnostics.size);
-        try testing.expectEqualStrings(case.message, diagnostics.last().?.message);
-        try testing.expectEqualStrings(case.path, diagnostics.last().?.location.?.path);
+        try testing.expectEqualStrings(
+            case.message,
+            diagnostics.last().?.message,
+        );
+        try testing.expectEqualStrings(
+            case.path,
+            diagnostics.last().?.location.?.path,
+        );
     }
 }
 
@@ -477,9 +619,21 @@ test "freshness" {
     };
 
     const cases = [_]Case{
-        .{ .name = "ok_fresh", .change = null, .expected = .fresh },
-        .{ .name = "ok_stale", .change = "city,age\nParis,31\nLyon,45\n", .expected = .stale },
-        .{ .name = "ok_source_missing", .change = "", .expected = .source_missing },
+        .{
+            .name = "ok_fresh",
+            .change = null,
+            .expected = .fresh,
+        },
+        .{
+            .name = "ok_stale",
+            .change = "city,age\nParis,31\nLyon,45\n",
+            .expected = .stale,
+        },
+        .{
+            .name = "ok_source_missing",
+            .change = "",
+            .expected = .source_missing,
+        },
     };
 
     for (cases) |case| {
@@ -487,20 +641,31 @@ test "freshness" {
 
         var tmp = testing.tmpDir(.{});
         defer tmp.cleanup();
-        try importTable(tmp.dir, &.{"city"}, &.{&.{.{ .text = "Paris" }}});
+        try importTable(tmp.dir, &.{"city"}, &.{.text}, &.{&.{.{ .text = "Paris" }}});
 
         if (case.change) |data| {
             if (data.len == 0) {
                 try tmp.dir.deleteFile(testing.io, "sales.csv");
             } else {
-                try tmp.dir.writeFile(testing.io, .{ .sub_path = "sales.csv", .data = data });
+                try tmp.dir.writeFile(
+                    testing.io,
+                    .{ .sub_path = "sales.csv", .data = data },
+                );
             }
         }
 
-        var cache: CacheTable = .new(testing.io, testing.allocator, tmp.dir, "sales.tabl");
+        var cache: CacheTable = .new(
+            testing.io,
+            testing.allocator,
+            tmp.dir,
+            "sales.tabl",
+        );
         defer cache.close();
         var diagnostics: Diagnostics = .{};
 
-        try testing.expectEqual(case.expected, try cache.table().freshness(&diagnostics));
+        try testing.expectEqual(
+            case.expected,
+            try cache.table().freshness(&diagnostics),
+        );
     }
 }

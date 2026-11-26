@@ -1,6 +1,7 @@
 const std = @import("std");
 pub const diagnostic = @import("core/diagnostic.zig");
 pub const Value = @import("core/table/value.zig").Value;
+pub const CalendarDate = @import("core/table/type/calendar.zig").CalendarDate;
 pub const Scan = @import("app/scan/scan.zig").Scan;
 pub const Import = @import("app/import/import.zig").Import;
 pub const Page = @import("app/page/page.zig").Page;

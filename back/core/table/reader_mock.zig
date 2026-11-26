@@ -13,7 +13,7 @@ pub const MockReader = struct {
     pub fn reader(self: *MockReader) Reader {
         return .{
             .ptr = self,
-            .vtable = &.{ .header = header, .next = next },
+            .vtable = &.{ .header = header, .next = next, .rewind = rewind },
         };
     }
 
@@ -42,5 +42,10 @@ pub const MockReader = struct {
         }
 
         return null;
+    }
+
+    fn rewind(ptr: *anyopaque) void {
+        const self: *MockReader = @ptrCast(@alignCast(ptr));
+        self.position = 0;
     }
 };
