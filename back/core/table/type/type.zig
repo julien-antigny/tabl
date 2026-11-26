@@ -1,4 +1,4 @@
-const DateFormat = @import("check_date.zig").DateFormat;
+const DateFormat = @import("parse_date.zig").DateFormat;
 
 /// Declared from the most precise to the least:
 /// inference picks the first one still possible.

@@ -1,10 +1,10 @@
 const std = @import("std");
 const Type = @import("type.zig").Type;
 const ColumnType = @import("type.zig").ColumnType;
-const check_number = @import("check_number.zig");
-const check_boolean = @import("check_boolean.zig");
-const check_date = @import("check_date.zig");
-const DateFormat = check_date.DateFormat;
+const parse_number = @import("parse_number.zig");
+const parse_boolean = @import("parse_boolean.zig");
+const parse_date = @import("parse_date.zig");
+const DateFormat = parse_date.DateFormat;
 const Value = @import("../value.zig").Value;
 
 pub const TypeInference = struct {
@@ -41,20 +41,20 @@ pub const Candidates = struct {
     fn observe(self: *Candidates, text: []const u8) void {
         self.seen = true;
 
-        if (self.types.contains(.integer) and !check_number.isIntegerText(text)) {
+        if (self.types.contains(.integer) and parse_number.parseInteger(text) == null) {
             self.types.remove(.integer);
         }
 
-        if (self.types.contains(.decimal) and !check_number.isDecimalText(text)) {
+        if (self.types.contains(.decimal) and parse_number.parseDecimal(text) == null) {
             self.types.remove(.decimal);
         }
 
-        if (self.types.contains(.boolean) and !check_boolean.isBooleanText(text)) {
+        if (self.types.contains(.boolean) and parse_boolean.parseBoolean(text) == null) {
             self.types.remove(.boolean);
         }
 
         for (std.enums.values(DateFormat)) |format| {
-            if (self.date_formats.contains(format) and !check_date.isDateText(text, format)) {
+            if (self.date_formats.contains(format) and parse_date.parseDate(text, format) == null) {
                 self.date_formats.remove(format);
             }
         }
@@ -82,9 +82,9 @@ pub const Candidates = struct {
 };
 
 test {
-    _ = check_number;
-    _ = check_boolean;
-    _ = check_date;
+    _ = parse_number;
+    _ = parse_boolean;
+    _ = parse_date;
 }
 
 test "observe" {
