@@ -15,7 +15,7 @@ pub const ScanCommand = struct {
 pub const ImportCommand = struct {
     csv_path: []const u8,
     cache_path: []const u8,
-    decimal_mark: tabl.DecimalMark = .point,
+    options: tabl.ImportOptions = .{},
 };
 
 pub const PageCommand = struct {
@@ -39,11 +39,18 @@ pub fn parse(args: []const [:0]const u8) CliError!Command {
             .csv_path = args[2],
             .cache_path = args[3],
         };
-        for (args[4..]) |option| {
-            if (!std.mem.eql(u8, option, "--decimal-comma")) {
+        var index: usize = 4;
+        while (index < args.len) : (index += 1) {
+            const option = args[index];
+            if (std.mem.eql(u8, option, "--decimal-comma")) {
+                import.options.decimal_mark = .comma;
+            } else if (std.mem.eql(u8, option, "--sample")) {
+                index += 1;
+                if (index == args.len) return CliError.MissingArguments;
+                import.options.sample_rows = try parseNumber(u64, args[index]);
+            } else {
                 return CliError.UnknownOption;
             }
-            import.decimal_mark = .comma;
         }
         return .{ .import = import };
     }
@@ -111,9 +118,51 @@ test "parse" {
                 .import = .{
                     .csv_path = "sales.csv",
                     .cache_path = "sales.tabl",
-                    .decimal_mark = .comma,
+                    .options = .{ .decimal_mark = .comma },
                 },
             },
+        },
+        .{
+            .name = "ok_import_sample_and_decimal_comma",
+            .args = &.{
+                "tabl",
+                "import",
+                "sales.csv",
+                "sales.tabl",
+                "--sample",
+                "1000",
+                "--decimal-comma",
+            },
+            .expected = .{
+                .import = .{
+                    .csv_path = "sales.csv",
+                    .cache_path = "sales.tabl",
+                    .options = .{ .decimal_mark = .comma, .sample_rows = 1000 },
+                },
+            },
+        },
+        .{
+            .name = "error_import_sample_without_rows",
+            .args = &.{
+                "tabl",
+                "import",
+                "sales.csv",
+                "sales.tabl",
+                "--sample",
+            },
+            .expected = CliError.MissingArguments,
+        },
+        .{
+            .name = "error_import_sample_not_a_number",
+            .args = &.{
+                "tabl",
+                "import",
+                "sales.csv",
+                "sales.tabl",
+                "--sample",
+                "many",
+            },
+            .expected = CliError.InvalidNumber,
         },
         .{
             .name = "ok_page",
