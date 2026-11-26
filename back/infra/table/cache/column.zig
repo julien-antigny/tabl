@@ -150,7 +150,17 @@ test "value" {
             .bytes = "a",
             .empty_mask = &.{ 0xFE, 0x01 },
             .offset_width = 32,
-            .expected = &.{ .{ .text = "a" }, .empty, .empty, .empty, .empty, .empty, .empty, .empty, .empty },
+            .expected = &.{
+                .{ .text = "a" },
+                .empty,
+                .empty,
+                .empty,
+                .empty,
+                .empty,
+                .empty,
+                .empty,
+                .empty,
+            },
         },
         .{
             .name = "ok_no_rows",

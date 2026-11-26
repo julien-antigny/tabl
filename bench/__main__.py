@@ -93,7 +93,9 @@ for ref in refs:
         cache_path = path / f"rows_{size_of_csv}_{ref}.tabl"
         import_command = f"{tabl} import {csv_path} {cache_path}"
         page_command = f"{tabl} page {cache_path} {size_of_csv // 2} 100"
+        scan_command = f"{tabl} scan {csv_path}"
 
+        results.append((ref, size_of_csv, "scan", measure(scan_command)))
         results.append((ref, size_of_csv, "import", measure(import_command)))
         results.append((ref, size_of_csv, "page", measure(page_command)))
 
@@ -104,7 +106,7 @@ print(
 for ref, rows, command, times in results:
     ms = [t * 1000 for t in times]
     speed = (
-        f"{rows / statistics.median(times) / 1e6:.2f} M" if command == "import" else "-"
+        f"{rows / statistics.median(times) / 1e6:.2f} M" if command in ("scan", "import") else "-"
     )
     print(
         f"{ref:<12}{rows:>12}  {command:<8}"

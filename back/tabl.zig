@@ -10,4 +10,5 @@ pub const CacheTable = @import("infra/table/cache/table.zig").CacheTable;
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("core/table/type_inference.zig");
 }
