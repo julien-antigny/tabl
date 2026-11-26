@@ -11,8 +11,8 @@ pub const Type = enum {
 };
 
 /// The type chosen for a column. A date carries its format,
-/// needed to read the values.
-pub const ColumnType = union(enum) {
+/// needed to read the values; `std.meta.activeTag` gives the `Type`.
+pub const ColumnType = union(Type) {
     integer,
     decimal,
     boolean,

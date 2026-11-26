@@ -130,8 +130,39 @@ fn printValues(out: *std.Io.Writer, values: []const tabl.Value) !void {
             .integer => |integer| try out.print("{d}", .{integer}),
             .decimal => |decimal| try out.print("{d}", .{decimal}),
             .boolean => |boolean| try out.print("{}", .{boolean}),
-            .date => @panic("dates are not printed yet"),
+            .date => |days| try printDate(out, tabl.CalendarDate.fromDays(days)),
         }
     }
     try out.writeByte('\n');
+}
+
+/// Prints a date as YYYY-MM-DD. A year before 1 or after 9999, only found
+/// in a damaged cache, is printed as is.
+fn printDate(out: *std.Io.Writer, date: tabl.CalendarDate) !void {
+    if (std.math.cast(u16, date.year)) |year| {
+        if (year >= 1 and year <= 9999) {
+            return out.print("{d:0>4}-{d:0>2}-{d:0>2}", .{ year, date.month, date.day });
+        }
+    }
+    try out.print("{d}-{d:0>2}-{d:0>2}", .{ date.year, date.month, date.day });
+}
+
+test "printValues" {
+    var buffer: [128]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buffer);
+
+    try printValues(&out, &.{
+        .{ .text = "Paris" },
+        .empty,
+        .{ .integer = -31 },
+        .{ .decimal = 1.5 },
+        .{ .boolean = true },
+        .{ .date = 19797 },
+        .{ .date = -719162 },
+    });
+
+    try std.testing.expectEqualStrings(
+        "Paris\t\t-31\t1.5\ttrue\t2024-03-15\t0001-01-01\n",
+        out.buffered(),
+    );
 }

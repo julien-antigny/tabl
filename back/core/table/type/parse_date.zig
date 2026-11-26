@@ -1,5 +1,6 @@
 const std = @import("std");
 const isDigits = @import("parse_number.zig").isDigits;
+const CalendarDate = @import("calendar.zig").CalendarDate;
 
 /// The date formats recognized, all 10 characters long.
 /// Declared in order of preference: when several formats fit every value
@@ -84,26 +85,13 @@ pub fn parseDate(text: []const u8, format: DateFormat) ?i32 {
     );
     if (day < 1 or day > days_in_month) return null;
 
-    return daysSince1970(year, month, day);
+    const date: CalendarDate = .{ .year = year, .month = @intCast(month), .day = @intCast(day) };
+    return date.toDays();
 }
 
 fn numberOf(digits: []const u8) ?u16 {
     if (!isDigits(digits)) return null;
     return std.fmt.parseInt(u16, digits, 10) catch null;
-}
-
-/// Counts the days from 1970-01-01 to a valid date.
-/// Algorithm `days_from_civil` by Howard Hinnant: the year is shifted to start
-/// in March, so that February, the only irregular month, comes last.
-fn daysSince1970(year: u16, month: u16, day: u16) i32 {
-    const shifted_year: i32 = if (month <= 2) @as(i32, year) - 1 else year;
-    const era = @divFloor(shifted_year, 400);
-    const year_of_era = shifted_year - era * 400;
-    const month_from_march: i32 = if (month > 2) month - 3 else month + 9;
-    const day_of_year = @divFloor(153 * month_from_march + 2, 5) + day - 1;
-    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) -
-        @divFloor(year_of_era, 100) + day_of_year;
-    return era * 146097 + day_of_era - 719468;
 }
 
 test "parseDate" {
