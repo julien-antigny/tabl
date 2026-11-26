@@ -52,7 +52,7 @@ pub fn import(
     const summary = try tabl.Import.new(
         csv.reader(),
         cache.writer(),
-        command.decimal_mark,
+        command.options,
     ).run(init.gpa, diagnostics);
     try out.print("{d} rows, {d} columns imported into {s}\n", .{
         summary.rows,

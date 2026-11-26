@@ -5,6 +5,7 @@ pub const DecimalMark = @import("core/table/type/type.zig").DecimalMark;
 pub const CalendarDate = @import("core/table/type/calendar.zig").CalendarDate;
 pub const Scan = @import("app/scan/scan.zig").Scan;
 pub const Import = @import("app/import/import.zig").Import;
+pub const ImportOptions = @import("app/import/import.zig").ImportOptions;
 pub const Page = @import("app/page/page.zig").Page;
 pub const CsvReader = @import("infra/table/csv/reader.zig").CsvReader;
 pub const CacheWriter = @import("infra/table/cache/writer.zig").CacheWriter;
