@@ -10,11 +10,15 @@ const Value = @import("../value.zig").Value;
 pub const TypeInference = struct {
     candidates: []Candidates,
 
+    /// Narrows the candidates of each column with one row of the source.
+    /// The values come straight from the source: only `.empty` or `.text`,
+    /// any other value is a programming error.
     pub fn observe(self: TypeInference, values: []const Value) void {
         for (values, self.candidates) |value, *candidates| {
             switch (value) {
                 .empty => {},
                 .text => |text| candidates.observe(text),
+                .integer, .decimal, .boolean, .date => unreachable,
             }
         }
     }

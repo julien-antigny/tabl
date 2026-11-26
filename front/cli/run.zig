@@ -127,6 +127,10 @@ fn printValues(out: *std.Io.Writer, values: []const tabl.Value) !void {
         switch (value) {
             .empty => {},
             .text => |text| try out.writeAll(text),
+            .integer => |integer| try out.print("{d}", .{integer}),
+            .decimal => |decimal| try out.print("{d}", .{decimal}),
+            .boolean => |boolean| try out.print("{}", .{boolean}),
+            .date => @panic("dates are not printed yet"),
         }
     }
     try out.writeByte('\n');

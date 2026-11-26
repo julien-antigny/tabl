@@ -193,6 +193,7 @@ pub const CacheWriter = struct {
             const text = switch (value) {
                 .empty => "",
                 .text => |text| text,
+                .integer, .decimal, .boolean, .date => @panic("typed values are not written yet"),
             };
             column.bytes_writer.interface.writeAll(text) catch return writeErrorOf(
                 &column.bytes_writer,

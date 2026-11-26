@@ -108,10 +108,10 @@ pub const MockWriter = struct {
         const allocator = self.arena.allocator();
         const copies = try allocator.alloc(Value, values.len);
 
-        for (values, copies) |text, *copied| {
-            copied.* = switch (text) {
-                .empty => .empty,
-                .text => |bytes| .{ .text = try allocator.dupe(u8, bytes) },
+        for (values, copies) |value, *copied| {
+            copied.* = switch (value) {
+                .text => |text| .{ .text = try allocator.dupe(u8, text) },
+                .empty, .integer, .decimal, .boolean, .date => value,
             };
         }
 
