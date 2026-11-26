@@ -1,10 +1,15 @@
+import argparse
 import random
 import statistics
 import subprocess
-import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
+
+parser = argparse.ArgumentParser(prog="bench", description="Benchmark tabl on generated CSV files.")
+parser.add_argument("refs", nargs="*", default=["main"], help="git branches or tags to compare")
+parser.add_argument("--sample", type=int, help="pass --sample <rows> to the import")
+args = parser.parse_args()
 
 # First step : build csv
 empty_rate = 0.01
@@ -55,9 +60,7 @@ for size_of_csv in size_of_csvs:
 # Second step : install versions
 root = Path(__file__).parent.parent
 clone = path.parent / "clone"
-refs = sys.argv[1:] or ["main"]
-
-for ref in refs:
+for ref in args.refs:
     subprocess.run(f"git clone --branch {ref} {root} {clone}", shell=True, check=False)
     subprocess.run(
         f"cd {clone} && zig build -Doptimize=ReleaseFast -p ../bin/{ref}",
@@ -75,23 +78,21 @@ def measure(command):
     times = []
     for _ in range(repeat):
         start = time.perf_counter()
-        subprocess.run(
-            command,
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, check=True)
         times.append(time.perf_counter() - start)
     return times
 
 
-for ref in refs:
+for ref in args.refs:
     tabl = path.parent / "bin" / ref / "bin" / "tabl"
     for size_of_csv in size_of_csvs:
         csv_path = path / f"rows_{size_of_csv}.csv"
         cache_path = path / f"rows_{size_of_csv}_{ref}.tabl"
+
         import_command = f"{tabl} import {csv_path} {cache_path}"
+        if args.sample is not None:
+            import_command += f" --sample {args.sample}"
+
         page_command = f"{tabl} page {cache_path} {size_of_csv // 2} 100"
         scan_command = f"{tabl} scan {csv_path}"
 
