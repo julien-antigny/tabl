@@ -1,4 +1,4 @@
-# Cache format — version 1
+# Cache format
 
 The cache holds a table that has already been imported, stored **column by column**, so that it can be opened with mmap and read without decoding.
 
@@ -138,22 +138,3 @@ Any failure refuses the cache with a clear message.
 | size of `N.values` = `rows` × width of the type | damaged cache |
 
 Values are not checked one by one on opening: it would read whole files, a cost that grows with the row count. Instead, reading a text clamps its positions to the size of `N.bytes`, and a boolean byte other than `0` reads as true. A damaged cache may show wrong values, but nothing is ever read outside the files.
-
-## Evolution
-
-- Any change to the format increments `version`.
-- A reader only accepts the versions it knows. There is no implicit forward compatibility.
-- Planned changes:
-
-| Version | Addition | PR |
-|---|---|---|
-| 2 | min and max per block of rows | 6 |
-| 3 | dictionary for repeated values | 7 |
-
-- Unplanned ideas, to decide on measurements:
-
-| Idea | Principle | Expected gain | Cost |
-|---|---|---|---|
-| block positions | a `u64` base every 65,536 rows, then 16-bit offsets | positions halved | low; direct access is kept |
-| block compression (zstd, lz4) | each block of text compressed, decompressed on read | ×2 to ×4 on free text | high; no more direct mmap, a block cache to manage |
-| booleans as bits | 8 booleans per byte, like `N.empty` | boolean columns ÷ 8 | low; reading needs a shift |
