@@ -1,4 +1,5 @@
 const std = @import("std");
+const DecimalMark = @import("type.zig").DecimalMark;
 
 /// Reads an integer: an optional sign, then digits without a leading zero.
 /// Returns null when the text is not an integer or does not fit in an `i64`.
@@ -23,26 +24,55 @@ pub fn parseInteger(text: []const u8) ?i64 {
     return value;
 }
 
-/// Reads a decimal: an integer, then optionally a point followed by digits,
+/// The longest decimal written with a comma: it is copied on the stack
+/// to replace the comma with a point.
+const max_comma_decimal_len = 64;
+
+/// Reads a decimal: an integer, then optionally the mark followed by digits,
 /// then optionally `e` or `E` followed by an integer.
 /// Returns null when the text is not a decimal or is too large for an `f64`.
-pub fn parseDecimal(text: []const u8) ?f64 {
-    if (!isDecimalText(text)) return null;
-    const value = std.fmt.parseFloat(f64, text) catch return null;
+/// With a comma, a text longer than 64 characters is not a decimal.
+pub fn parseDecimal(text: []const u8, mark: DecimalMark) ?f64 {
+    const mark_char: u8 = switch (mark) {
+        .point => '.',
+        .comma => ',',
+    };
+    if (!isDecimalText(text, mark_char)) return null;
+    const value = switch (mark) {
+        .point => std.fmt.parseFloat(f64, text) catch return null,
+        .comma => parseCommaDecimal(text) orelse return null,
+    };
     if (std.math.isInf(value)) return null;
     return value;
 }
 
-fn isDecimalText(text: []const u8) bool {
+/// Replaces the comma with a point, then reads the text as a float.
+fn parseCommaDecimal(text: []const u8) ?f64 {
+    if (text.len > max_comma_decimal_len) return null;
+
+    var buffer: [max_comma_decimal_len]u8 = undefined;
+    const copy = buffer[0..text.len];
+
+    @memcpy(copy, text);
+
+    std.mem.replaceScalar(u8, copy, ',', '.');
+
+    return std.fmt.parseFloat(f64, copy) catch null;
+}
+
+fn isDecimalText(text: []const u8, mark: u8) bool {
     var before_exponent = text;
     if (std.mem.indexOfAny(u8, text, "eE")) |exponent_start| {
         if (!isIntegerText(text[exponent_start + 1 ..])) return false;
         before_exponent = text[0..exponent_start];
     }
 
-    if (std.mem.indexOfScalar(u8, before_exponent, '.')) |dot| {
-        const fraction = before_exponent[dot + 1 ..];
-        return isIntegerText(before_exponent[0..dot]) and fraction.len > 0 and isDigits(fraction);
+    if (std.mem.indexOfScalar(u8, before_exponent, mark)) |mark_index| {
+        const fraction = before_exponent[mark_index + 1 ..];
+
+        return isIntegerText(before_exponent[0..mark_index]) and
+            fraction.len > 0 and
+            isDigits(fraction);
     }
 
     return isIntegerText(before_exponent);
@@ -165,6 +195,7 @@ test "parseDecimal" {
     const Case = struct {
         name: []const u8,
         text: []const u8,
+        mark: DecimalMark = .point,
         expected: ?f64,
     };
 
@@ -230,8 +261,56 @@ test "parseDecimal" {
             .expected = null,
         },
         .{
-            .name = "error_comma",
+            .name = "error_comma_with_point_mark",
             .text = "1,5",
+            .expected = null,
+        },
+        .{
+            .name = "ok_comma",
+            .text = "1,5",
+            .mark = .comma,
+            .expected = 1.5,
+        },
+        .{
+            .name = "ok_comma_negative_below_one",
+            .text = "-0,25",
+            .mark = .comma,
+            .expected = -0.25,
+        },
+        .{
+            .name = "ok_comma_exponent",
+            .text = "2,5E-3",
+            .mark = .comma,
+            .expected = 0.0025,
+        },
+        .{
+            .name = "ok_comma_integer",
+            .text = "10",
+            .mark = .comma,
+            .expected = 10,
+        },
+        .{
+            .name = "error_point_with_comma_mark",
+            .text = "1.5",
+            .mark = .comma,
+            .expected = null,
+        },
+        .{
+            .name = "error_comma_no_fraction",
+            .text = "5,",
+            .mark = .comma,
+            .expected = null,
+        },
+        .{
+            .name = "error_two_commas",
+            .text = "1,2,3",
+            .mark = .comma,
+            .expected = null,
+        },
+        .{
+            .name = "error_comma_too_long",
+            .text = "1,000000000000000000000000000000000000000000000000000000000000000",
+            .mark = .comma,
             .expected = null,
         },
         .{
@@ -278,6 +357,6 @@ test "parseDecimal" {
 
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.name});
-        try std.testing.expectEqual(case.expected, parseDecimal(case.text));
+        try std.testing.expectEqual(case.expected, parseDecimal(case.text, case.mark));
     }
 }

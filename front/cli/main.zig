@@ -11,6 +11,7 @@ const usage =
     \\commands:
     \\  scan <file.csv>                       count the rows and columns of a CSV file
     \\  import <file.csv> <cache>             import a CSV file into a cache
+    \\    --decimal-comma                     decimals are written with a comma (1,5)
     \\  page <cache> <first row> <row count>  print rows from a cache
     \\
 ;

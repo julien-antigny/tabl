@@ -1,6 +1,7 @@
 const std = @import("std");
 const Type = @import("type.zig").Type;
 const ColumnType = @import("type.zig").ColumnType;
+const DecimalMark = @import("type.zig").DecimalMark;
 const parse_number = @import("parse_number.zig");
 const parse_boolean = @import("parse_boolean.zig");
 const parse_date = @import("parse_date.zig");
@@ -9,6 +10,13 @@ const Value = @import("../value.zig").Value;
 
 pub const TypeInference = struct {
     candidates: []Candidates,
+    decimal_mark: DecimalMark,
+
+    /// `candidates` has one entry per column, `decimal_mark` is the one
+    /// used by the decimals of the whole table.
+    pub fn new(candidates: []Candidates, decimal_mark: DecimalMark) TypeInference {
+        return .{ .candidates = candidates, .decimal_mark = decimal_mark };
+    }
 
     /// Narrows the candidates of each column with one row of the source.
     /// The values come straight from the source: only `.empty` or `.text`,
@@ -17,7 +25,7 @@ pub const TypeInference = struct {
         for (values, self.candidates) |value, *candidates| {
             switch (value) {
                 .empty => {},
-                .text => |text| candidates.observe(text),
+                .text => |text| candidates.observe(text, self.decimal_mark),
                 .integer, .decimal, .boolean, .date => unreachable,
             }
         }
@@ -38,24 +46,36 @@ pub const Candidates = struct {
     date_formats: std.EnumSet(DateFormat) = .full,
     seen: bool = false,
 
-    fn observe(self: *Candidates, text: []const u8) void {
+    fn observe(
+        self: *Candidates,
+        text: []const u8,
+        decimal_mark: DecimalMark,
+    ) void {
         self.seen = true;
 
-        const is_integer = self.types.contains(.integer) and parse_number.parseInteger(text) != null;
+        const is_integer = self.types.contains(.integer) and
+            parse_number.parseInteger(text) != null;
+
         if (!is_integer) {
             self.types.remove(.integer);
         }
 
-        if (!is_integer and self.types.contains(.decimal) and parse_number.parseDecimal(text) == null) {
+        if (!is_integer and self.types.contains(.decimal) and
+            parse_number.parseDecimal(text, decimal_mark) == null)
+        {
             self.types.remove(.decimal);
         }
 
-        if (self.types.contains(.boolean) and parse_boolean.parseBoolean(text) == null) {
+        if (self.types.contains(.boolean) and
+            parse_boolean.parseBoolean(text) == null)
+        {
             self.types.remove(.boolean);
         }
 
         for (std.enums.values(DateFormat)) |format| {
-            if (self.date_formats.contains(format) and parse_date.parseDate(text, format) == null) {
+            if (self.date_formats.contains(format) and
+                parse_date.parseDate(text, format) == null)
+            {
                 self.date_formats.remove(format);
             }
         }
@@ -92,6 +112,7 @@ test "observe" {
     const Case = struct {
         name: []const u8,
         rows: []const []const Value,
+        decimal_mark: DecimalMark = .point,
         expected: []const Candidates,
     };
 
@@ -134,6 +155,26 @@ test "observe" {
                 },
                 .{
                     .types = .initMany(&.{ .decimal, .text }),
+                    .date_formats = .empty,
+                    .seen = true,
+                },
+            },
+        },
+        .{
+            .name = "ok_comma_decimals",
+            .rows = &.{
+                &.{ .{ .text = "1,5" }, .{ .text = "1.5" } },
+                &.{ .{ .text = "2" }, .{ .text = "2" } },
+            },
+            .decimal_mark = .comma,
+            .expected = &.{
+                .{
+                    .types = .initMany(&.{ .decimal, .text }),
+                    .date_formats = .empty,
+                    .seen = true,
+                },
+                .{
+                    .types = .initOne(.text),
                     .date_formats = .empty,
                     .seen = true,
                 },
@@ -256,7 +297,7 @@ test "observe" {
         errdefer std.debug.print("case: {s}\n", .{case.name});
 
         var candidates = [_]Candidates{ .{}, .{} };
-        const inference: TypeInference = .{ .candidates = &candidates };
+        const inference: TypeInference = .new(&candidates, case.decimal_mark);
         for (case.rows) |row| {
             inference.observe(row);
         }
@@ -332,7 +373,7 @@ test "result" {
 
         var candidates = [_]Candidates{case.candidates};
         var types: [1]ColumnType = undefined;
-        const inference: TypeInference = .{ .candidates = &candidates };
+        const inference: TypeInference = .new(&candidates, .point);
         inference.result(&types);
 
         try std.testing.expectEqual(case.expected, types[0]);

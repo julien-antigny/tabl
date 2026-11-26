@@ -9,6 +9,7 @@ const MockWriter = @import("../../core/table/writer_mock.zig").MockWriter;
 const TableError = @import("../../core/table/errors.zig").TableError;
 const ImportError = @import("errors.zig").ImportError;
 const ColumnType = @import("../../core/table/type/type.zig").ColumnType;
+const DecimalMark = @import("../../core/table/type/type.zig").DecimalMark;
 const Candidates = @import("../../core/table/type/inference.zig").Candidates;
 const TypeInference = @import("../../core/table/type/inference.zig").TypeInference;
 const convert = @import("../../core/table/type/convert.zig").convert;
@@ -21,9 +22,11 @@ pub const Summary = struct {
 pub const Import = struct {
     reader: Reader,
     writer: Writer,
+    decimal_mark: DecimalMark,
 
-    pub fn new(reader: Reader, writer: Writer) Import {
-        return .{ .reader = reader, .writer = writer };
+    /// `decimal_mark` is the one used by the decimals of the whole source.
+    pub fn new(reader: Reader, writer: Writer, decimal_mark: DecimalMark) Import {
+        return .{ .reader = reader, .writer = writer, .decimal_mark = decimal_mark };
     }
 
     /// Reads the source twice: once to infer the type of each column,
@@ -65,7 +68,7 @@ pub const Import = struct {
         defer allocator.free(candidates);
         @memset(candidates, .{});
 
-        const inference: TypeInference = .{ .candidates = candidates };
+        const inference: TypeInference = .new(candidates, self.decimal_mark);
         while (try self.reader.next(diagnostics)) |row| {
             inference.observe(row.values);
         }
@@ -84,7 +87,7 @@ pub const Import = struct {
         var rows: u64 = 0;
         while (try self.reader.next(diagnostics)) |row| {
             for (row.values, types, values) |value, column_type, *converted| {
-                converted.* = convert(value, column_type);
+                converted.* = convert(value, column_type, self.decimal_mark);
             }
             try self.writer.row(.{ .values = values }, diagnostics);
             rows += 1;
@@ -115,7 +118,7 @@ test "run copies every row" {
     defer writer.deinit();
     var diagnostics: Diagnostics = .{};
 
-    const summary = try Import.new(reader.reader(), writer.writer()).run(std.testing.allocator, &diagnostics);
+    const summary = try Import.new(reader.reader(), writer.writer(), .point).run(std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqual(Summary{ .rows = 2, .columns = 2 }, summary);
     try std.testing.expectEqual(0, diagnostics.size);
@@ -138,7 +141,7 @@ test "run converts the values to the inferred types" {
     defer writer.deinit();
     var diagnostics: Diagnostics = .{};
 
-    _ = try Import.new(reader.reader(), writer.writer()).run(std.testing.allocator, &diagnostics);
+    _ = try Import.new(reader.reader(), writer.writer(), .point).run(std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqualDeep(
         &[_]ColumnType{ .integer, .text, .{ .date = .day_month_year_slash } },
@@ -150,6 +153,31 @@ test "run converts the values to the inferred types" {
     );
     try std.testing.expectEqualDeep(
         &[_]Value{ .{ .integer = 2 }, .empty, .empty },
+        writer.rows.items[1],
+    );
+}
+
+test "run reads decimals with a comma" {
+    var reader: MockReader = .{
+        .names = &.{ "price", "code" },
+        .rows = &.{
+            .{ .values = &.{ .{ .text = "1,5" }, .{ .text = "1.5" } } },
+            .{ .values = &.{ .{ .text = "2" }, .{ .text = "2" } } },
+        },
+    };
+    var writer: MockWriter = .new(std.testing.allocator);
+    defer writer.deinit();
+    var diagnostics: Diagnostics = .{};
+
+    _ = try Import.new(reader.reader(), writer.writer(), .comma).run(std.testing.allocator, &diagnostics);
+
+    try std.testing.expectEqualDeep(&[_]ColumnType{ .decimal, .text }, writer.types);
+    try std.testing.expectEqualDeep(
+        &[_]Value{ .{ .decimal = 1.5 }, .{ .text = "1.5" } },
+        writer.rows.items[0],
+    );
+    try std.testing.expectEqualDeep(
+        &[_]Value{ .{ .decimal = 2 }, .{ .text = "2" } },
         writer.rows.items[1],
     );
 }
@@ -209,7 +237,7 @@ test "run stops on a failure and does not finish" {
 
         try std.testing.expectError(
             case.expected,
-            Import.new(reader.reader(), writer.writer()).run(std.testing.allocator, &diagnostics),
+            Import.new(reader.reader(), writer.writer(), .point).run(std.testing.allocator, &diagnostics),
         );
 
         try std.testing.expect(!writer.finished);

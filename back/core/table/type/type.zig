@@ -10,6 +10,13 @@ pub const Type = enum {
     text,
 };
 
+/// The character between the integer part and the fraction of a decimal.
+/// The same for the whole table.
+pub const DecimalMark = enum {
+    point,
+    comma,
+};
+
 /// The type chosen for a column. A date carries its format,
 /// needed to read the values; `std.meta.activeTag` gives the `Type`.
 pub const ColumnType = union(Type) {
