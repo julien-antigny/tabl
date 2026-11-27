@@ -24,8 +24,12 @@ pub const Scan = struct {
             return fail(err, diagnostics);
         };
 
+        const row_readers = self.reader.rowReaders(1, diagnostics) catch |err| {
+            return fail(err, diagnostics);
+        };
+
         var rows: u64 = 0;
-        while (self.reader.next(diagnostics) catch |err| {
+        while (row_readers[0].next(diagnostics) catch |err| {
             return fail(err, diagnostics);
         }) |_| {
             rows += 1;

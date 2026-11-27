@@ -60,7 +60,6 @@ pub const Import = struct {
         try self.inferTypes(allocator, types, diagnostics);
 
         try self.writer.header(header, types, diagnostics);
-        self.reader.rewind();
         const rows = try self.copyRows(allocator, header, types, diagnostics);
         try self.writer.finish(diagnostics);
 
@@ -78,10 +77,11 @@ pub const Import = struct {
         @memset(candidates, .{});
 
         const inference: TypeInference = .new(candidates, self.options.decimal_mark);
+        const row_reader = (try self.reader.rowReaders(1, diagnostics))[0];
         const sample_rows = self.options.sample_rows orelse std.math.maxInt(u64);
         var rows: u64 = 0;
         while (rows < sample_rows) : (rows += 1) {
-            const row = try self.reader.next(diagnostics) orelse break;
+            const row = try row_reader.next(diagnostics) orelse break;
             inference.observe(row.values);
         }
         inference.result(types);
@@ -97,8 +97,9 @@ pub const Import = struct {
         const values = try allocator.alloc(Value, types.len);
         defer allocator.free(values);
 
+        const row_reader = (try self.reader.rowReaders(1, diagnostics))[0];
         var rows: u64 = 0;
-        while (try self.reader.next(diagnostics)) |row| {
+        while (try row_reader.next(diagnostics)) |row| {
             for (row.values, types, values, header.names) |value, column_type, *converted, name| {
                 converted.* = convert(value, column_type, self.options.decimal_mark) orelse
                     return mismatch(rows + 1, name, value.text, column_type, diagnostics);

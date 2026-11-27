@@ -1,9 +1,9 @@
 const Diagnostics = @import("../diagnostic.zig").Diagnostics;
 const Header = @import("header.zig").Header;
-const Row = @import("row.zig").Row;
+const RowReader = @import("row_reader.zig").RowReader;
 const TableError = @import("errors.zig").TableError;
 
-/// Reads a table from its first row to its last, as many times as needed.
+/// Gives access to a table: its header, and its rows through row readers.
 ///
 /// The reader does not own its lifecycle: whoever created the adapter
 /// behind it opens and closes the underlying resources.
@@ -16,11 +16,11 @@ pub const Reader = struct {
             ptr: *anyopaque,
             diagnostics: *Diagnostics,
         ) TableError!Header,
-        next: *const fn (
+        rowReaders: *const fn (
             ptr: *anyopaque,
+            count: usize,
             diagnostics: *Diagnostics,
-        ) TableError!?Row,
-        rewind: *const fn (ptr: *anyopaque) void,
+        ) TableError![]const RowReader,
     };
 
     /// Returns the column names.
@@ -31,21 +31,20 @@ pub const Reader = struct {
         return self.vtable.header(self.ptr, diagnostics);
     }
 
-    /// Returns the next row, or null once every row has been read.
+    /// Returns at most `count` row readers, at least one: each reads a part
+    /// of whole rows, and together they give every row, in order.
+    /// One row reader reads the whole table; several can be read at the
+    /// same time, one per thread.
     ///
-    /// The row stays valid until the next call to `next`: copy it to keep it.
-    /// It always has as many values as the header has names; a row that does
-    /// not is reported as `Malformed`.
-    /// Calling `header` first is not required.
-    /// On error, at least one entry is pushed onto `diagnostics`.
-    pub fn next(self: Reader, diagnostics: *Diagnostics) TableError!?Row {
-        return self.vtable.next(self.ptr, diagnostics);
-    }
-
-    /// Goes back to the first row: the next call to `next` returns it again.
-    ///
-    /// Rows returned before become invalid; the header stays valid.
-    pub fn rewind(self: Reader) void {
-        self.vtable.rewind(self.ptr);
+    /// Each row reader starts on its first row: call `rowReaders` again to
+    /// read the rows again. `count` is at least 1.
+    /// The row readers stay valid until the next call to `rowReaders`,
+    /// or until the adapter is closed.
+    pub fn rowReaders(
+        self: Reader,
+        count: usize,
+        diagnostics: *Diagnostics,
+    ) TableError![]const RowReader {
+        return self.vtable.rowReaders(self.ptr, count, diagnostics);
     }
 };
