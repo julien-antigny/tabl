@@ -11,11 +11,13 @@ const max_parts = 8;
 
 pub const MockReader = struct {
     names: []const []const u8,
-    /// Every row, given by a single row reader when `parts` is empty.
+    /// Every row, given by a single row reader when one is asked
+    /// or when `parts` is empty.
     rows: []const Row = &.{},
     /// Returned by the last row reader once its rows have been read.
     failure: ?TableError = null,
-    /// The rows of each row reader, whatever the count asked.
+    /// The rows of each row reader when more than one is asked,
+    /// whatever the count: together, they should be `rows`.
     parts: []const []const Row = &.{},
     mock_row_readers: [max_parts]MockRowReader = undefined,
     row_readers: [max_parts]RowReader = undefined,
@@ -38,12 +40,11 @@ pub const MockReader = struct {
         count: usize,
         diagnostics: *Diagnostics,
     ) TableError![]const RowReader {
-        _ = count;
         _ = diagnostics;
         const self: *MockReader = @ptrCast(@alignCast(ptr));
 
         const single = [_][]const Row{self.rows};
-        const parts: []const []const Row = if (self.parts.len == 0) &single else self.parts;
+        const parts: []const []const Row = if (count == 1 or self.parts.len == 0) &single else self.parts;
         std.debug.assert(parts.len <= max_parts);
 
         for (parts, 0..) |rows, index| {

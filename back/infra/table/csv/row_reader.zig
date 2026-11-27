@@ -15,8 +15,12 @@ const fail = @import("errors.zig").fail;
 ///
 /// The header is read before, by the `CsvReader` that creates the row
 /// reader: the row reader only shares its names and its separator.
+///
+/// Each row reader is read by its own thread, and changes its fields on
+/// every row: it starts on its own cache line, so that two row readers side
+/// by side never make two cores write to the same one.
 pub const CsvRowReader = struct {
-    allocator: std.mem.Allocator,
+    allocator: std.mem.Allocator align(std.atomic.cache_line),
     path: []const u8,
     names: []const []const u8,
     separator: Separator,
