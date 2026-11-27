@@ -1,15 +1,17 @@
 const std = @import("std");
 const Diagnostics = @import("../../../core/diagnostic.zig").Diagnostics;
 const Header = @import("../../../core/table/header.zig").Header;
-const Row = @import("../../../core/table/row.zig").Row;
 const Reader = @import("../../../core/table/reader.zig").Reader;
+const RowReader = @import("../../../core/table/row_reader.zig").RowReader;
 const TableError = @import("../../../core/table/errors.zig").TableError;
 const Records = @import("records.zig").Records;
 const Record = @import("records.zig").Record;
 const Fields = @import("fields.zig").Fields;
-const Field = @import("fields.zig").Field;
 const Separator = @import("separator.zig").Separator;
 const detectSeparator = @import("separator.zig").detect;
+const CsvRowReader = @import("row_reader.zig").CsvRowReader;
+const textOf = @import("row_reader.zig").textOf;
+const errors = @import("errors.zig");
 const Value = @import("../../../core/table/value.zig").Value;
 
 const bom = "\xEF\xBB\xBF";
@@ -23,16 +25,16 @@ pub const CsvReader = struct {
     map: ?std.Io.File.MemoryMap = null,
     bytes: []const u8 = "",
     opened: bool = false,
-    records: Records = .{ .bytes = "" },
-    first_row: Records = .{ .bytes = "" },
     separator: Separator = .comma,
     names: std.ArrayList([]const u8) = .empty,
     name_bytes: std.ArrayList(u8) = .empty,
     header_loaded: bool = false,
-    values: std.ArrayList(Value) = .empty,
-    value_bytes: std.ArrayList(u8) = .empty,
+    /// The line of the header, for its failures.
     line: u64 = 0,
-    message_buffer: [128]u8 = undefined,
+    /// Positioned on the first row, once the header is loaded.
+    first_row: Records = .{ .bytes = "" },
+    csv_row_readers: []CsvRowReader = &.{},
+    row_readers: []RowReader = &.{},
 
     pub fn new(
         io: std.Io,
@@ -40,19 +42,21 @@ pub const CsvReader = struct {
         dir: std.Io.Dir,
         path: []const u8,
     ) CsvReader {
-        return .{ .io = io, .allocator = allocator, .dir = dir, .path = path };
+        return .{
+            .io = io,
+            .allocator = allocator,
+            .dir = dir,
+            .path = path,
+        };
     }
 
     pub fn close(self: *CsvReader) void {
+        self.freeRowReaders();
+        self.header_loaded = false;
         self.names.deinit(self.allocator);
         self.names = .empty;
         self.name_bytes.deinit(self.allocator);
         self.name_bytes = .empty;
-        self.header_loaded = false;
-        self.values.deinit(self.allocator);
-        self.values = .empty;
-        self.value_bytes.deinit(self.allocator);
-        self.value_bytes = .empty;
 
         if (self.map) |*map| {
             map.destroy(self.io);
@@ -69,7 +73,10 @@ pub const CsvReader = struct {
     pub fn reader(self: *CsvReader) Reader {
         return .{
             .ptr = self,
-            .vtable = &.{ .header = header, .next = next, .rewind = rewind },
+            .vtable = &.{
+                .header = header,
+                .rowReaders = rowReaders,
+            },
         };
     }
 
@@ -79,127 +86,115 @@ pub const CsvReader = struct {
         return .{ .names = self.names.items };
     }
 
-    fn next(ptr: *anyopaque, diagnostics: *Diagnostics) TableError!?Row {
+    fn rowReaders(
+        ptr: *anyopaque,
+        count: usize,
+        diagnostics: *Diagnostics,
+    ) TableError![]const RowReader {
         const self: *CsvReader = @ptrCast(@alignCast(ptr));
-        return self.nextRow() catch |err| self.fail(err, diagnostics);
+        self.createRowReaders(count) catch |err| return self.fail(err, diagnostics);
+        return self.row_readers;
     }
 
-    fn rewind(ptr: *anyopaque) void {
-        const self: *CsvReader = @ptrCast(@alignCast(ptr));
-        if (!self.header_loaded) return;
-        self.records = self.first_row;
-    }
-
-    fn fail(self: *CsvReader, err: anyerror, diagnostics: *Diagnostics) TableError {
-        const table_error = translate(err);
-        diagnostics.push(.{
-            .layer = .infra,
-            .kind = err,
-            .message = self.messageOf(err),
-            .location = .{
-                .path = self.path,
-                .line = if (table_error == error.Malformed) self.line else null,
-            },
-        });
-        return table_error;
-    }
-
-    fn messageOf(self: *CsvReader, err: anyerror) []const u8 {
-        return switch (err) {
-            error.FileNotFound => "file not found",
-            error.OutOfMemory => "out of memory",
-            error.UnterminatedQuote => "unterminated quote",
-            error.UnexpectedCharAfterQuote => "unexpected character after a closing quote",
-            error.ColumnCountMismatch => std.fmt.bufPrint(
-                &self.message_buffer,
-                "expected {d} values, found {d}",
-                .{
-                    self.names.items.len,
-                    self.values.items.len,
-                },
-            ) catch "wrong number of values",
-            else => std.fmt.bufPrint(
-                &self.message_buffer,
-                "cannot read file ({t})",
-                .{err},
-            ) catch "cannot read file",
-        };
+    fn fail(
+        self: *CsvReader,
+        err: anyerror,
+        diagnostics: *Diagnostics,
+    ) TableError {
+        return errors.fail(err, self.path, self.line, .{}, diagnostics);
     }
 
     fn loadHeader(self: *CsvReader) !void {
         if (self.header_loaded) return;
 
         try self.open();
-        self.records = .{ .bytes = self.bytes };
+        var records: Records = .{ .bytes = self.bytes };
 
-        if (try self.nextRecord()) |record| {
+        if (try self.nextRecord(&records)) |record| {
             self.separator = detectSeparator(record.text) orelse .comma;
-            try self.splitNames(record.text, &self.names, &self.name_bytes);
+            try self.splitNames(record.text);
         }
 
-        self.first_row = self.records;
+        self.first_row = records;
         self.header_loaded = true;
     }
 
-    fn nextRow(self: *CsvReader) !?Row {
-        try self.loadHeader();
-
-        const record = try self.nextRecord() orelse return null;
-
-        try self.splitValues(record.text, &self.values, &self.value_bytes);
-
-        if (self.values.items.len != self.names.items.len) {
-            return error.ColumnCountMismatch;
-        }
-
-        return .{ .values = self.values.items };
-    }
-
-    fn nextRecord(self: *CsvReader) !?Record {
-        const record = self.records.next() catch |err| {
-            self.line = self.records.line;
+    fn nextRecord(self: *CsvReader, records: *Records) !?Record {
+        const record = records.next() catch |err| {
+            self.line = records.line;
             return err;
         };
         if (record) |found| self.line = found.line;
         return record;
     }
 
-    fn splitNames(
-        self: *CsvReader,
-        text: []const u8,
-        names: *std.ArrayList([]const u8),
-        bytes: *std.ArrayList(u8),
-    ) !void {
-        names.clearRetainingCapacity();
-        bytes.clearRetainingCapacity();
-        try bytes.ensureTotalCapacity(self.allocator, text.len);
+    fn splitNames(self: *CsvReader, text: []const u8) !void {
+        self.names.clearRetainingCapacity();
+        self.name_bytes.clearRetainingCapacity();
+        try self.name_bytes.ensureTotalCapacity(self.allocator, text.len);
 
         var fields: Fields = .{
             .text = text,
             .separator = @backingInt(self.separator),
         };
         while (try fields.next()) |field| {
-            try names.append(self.allocator, textOf(field, bytes));
+            try self.names.append(
+                self.allocator,
+                textOf(field, &self.name_bytes),
+            );
         }
     }
 
-    fn splitValues(
-        self: *CsvReader,
-        text: []const u8,
-        values: *std.ArrayList(Value),
-        bytes: *std.ArrayList(u8),
-    ) !void {
-        values.clearRetainingCapacity();
-        bytes.clearRetainingCapacity();
-        try bytes.ensureTotalCapacity(self.allocator, text.len);
+    /// Cuts the rows into at most `count` parts, each starting on a row,
+    /// and creates a row reader for each.
+    fn createRowReaders(self: *CsvReader, count: usize) !void {
+        std.debug.assert(count > 0);
+        try self.loadHeader();
+        self.freeRowReaders();
 
-        var fields: Fields = .{
-            .text = text,
-            .separator = @backingInt(self.separator),
+        const starts = try self.allocator.alloc(RowStart, count);
+        defer self.allocator.free(starts);
+        const first: RowStart = .{
+            .position = self.first_row.position,
+            .line = self.first_row.line,
         };
-        while (try fields.next()) |field| {
-            try values.append(self.allocator, valueOf(field, bytes));
+        const found = rowStarts(self.bytes, first, starts);
+
+        const csv_row_readers = try self.allocator.alloc(CsvRowReader, found);
+        errdefer self.allocator.free(csv_row_readers);
+        const row_readers = try self.allocator.alloc(RowReader, found);
+
+        for (
+            csv_row_readers,
+            row_readers,
+            starts[0..found],
+            0..,
+        ) |*csv_row_reader, *row_reader, start, index| {
+            const end = if (index + 1 < found) starts[index + 1].position else self.bytes.len;
+            csv_row_reader.* = .new(
+                self.allocator,
+                self.path,
+                self.names.items,
+                self.separator,
+                .{
+                    .bytes = self.bytes[0..end],
+                    .position = start.position,
+                    .line = start.line,
+                },
+            );
+            row_reader.* = csv_row_reader.rowReader();
         }
+
+        self.csv_row_readers = csv_row_readers;
+        self.row_readers = row_readers;
+    }
+
+    fn freeRowReaders(self: *CsvReader) void {
+        for (self.csv_row_readers) |*csv_row_reader| csv_row_reader.deinit();
+        self.allocator.free(self.csv_row_readers);
+        self.csv_row_readers = &.{};
+        self.allocator.free(self.row_readers);
+        self.row_readers = &.{};
     }
 
     fn open(self: *CsvReader) !void {
@@ -224,33 +219,58 @@ pub const CsvReader = struct {
     }
 };
 
-fn translate(err: anyerror) TableError {
-    return switch (err) {
-        error.FileNotFound => error.NotFound,
-        error.OutOfMemory => error.OutOfMemory,
-        error.UnterminatedQuote,
-        error.UnexpectedCharAfterQuote,
-        error.ColumnCountMismatch,
-        => error.Malformed,
-        else => error.Unreadable,
-    };
-}
+/// Where a row starts in the bytes, and its line.
+const RowStart = struct {
+    position: usize,
+    line: u64,
+};
 
-fn textOf(field: Field, bytes: *std.ArrayList(u8)) []const u8 {
-    if (!field.has_escaped_quotes) return field.text;
+/// Fills `starts` with the start of at most `starts.len` parts of about the
+/// same size, `first` being the first row. Returns how many were found.
+///
+/// A position is inside quotes when an odd number of `"` comes before it,
+/// from `first` which is outside: the `"` and `\n` of each part are counted
+/// in a single loop, then a part starts after the next `\n` outside quotes.
+fn rowStarts(bytes: []const u8, first: RowStart, starts: []RowStart) usize {
+    starts[0] = first;
+    var found: usize = 1;
+    var position = first.position;
+    var line = first.line;
+    const size = bytes.len - first.position;
 
-    const start = bytes.items.len;
-    var index: usize = 0;
-    while (index < field.text.len) : (index += 1) {
-        bytes.appendAssumeCapacity(field.text[index]);
-        if (field.text[index] == '"') index += 1;
+    for (1..starts.len) |index| {
+        const target = first.position + size * index / starts.len;
+        if (target <= position) continue;
+
+        // Counted up to the byte before the target: when that byte ends a row,
+        // the part starts right on the target.
+        var quotes: usize = 0;
+        var line_ends: u64 = 0;
+        for (bytes[position .. target - 1]) |byte| {
+            quotes += @intFromBool(byte == '"');
+            line_ends += @intFromBool(byte == '\n');
+        }
+        var in_quotes = quotes % 2 == 1;
+        line += line_ends;
+        position = target - 1;
+
+        while (position < bytes.len) : (position += 1) {
+            switch (bytes[position]) {
+                '"' => in_quotes = !in_quotes,
+                '\n' => {
+                    line += 1;
+                    if (!in_quotes) break;
+                },
+                else => {},
+            }
+        }
+        position += 1;
+        if (position >= bytes.len) break;
+
+        starts[found] = .{ .position = position, .line = line };
+        found += 1;
     }
-    return bytes.items[start..];
-}
-
-fn valueOf(field: Field, bytes: *std.ArrayList(u8)) Value {
-    if (!field.quoted and field.text.len == 0) return .empty;
-    return .{ .text = textOf(field, bytes) };
+    return found;
 }
 
 fn withoutBom(bytes: []const u8) []const u8 {
@@ -454,56 +474,7 @@ test "loadHeader twice reads the header once" {
     try std.testing.expectEqual(2, reader.names.items.len);
 }
 
-test "rewind reads the rows again" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(
-        io,
-        .{ .sub_path = "table.csv", .data = "a,b\n1,2\n3,4\n" },
-    );
-
-    var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
-    defer csv.close();
-    const reader = csv.reader();
-    var diagnostics: Diagnostics = .{};
-
-    _ = try reader.next(&diagnostics);
-    _ = try reader.next(&diagnostics);
-    try std.testing.expectEqual(null, try reader.next(&diagnostics));
-
-    reader.rewind();
-    const row = (try reader.next(&diagnostics)).?;
-    try std.testing.expectEqualDeep(
-        &[_]Value{ .{ .text = "1" }, .{ .text = "2" } },
-        row.values,
-    );
-    try std.testing.expectEqual(2, csv.line);
-}
-
-test "rewind before reading changes nothing" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(
-        io,
-        .{ .sub_path = "table.csv", .data = "a,b\n1,2\n" },
-    );
-
-    var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
-    defer csv.close();
-    const reader = csv.reader();
-    var diagnostics: Diagnostics = .{};
-
-    reader.rewind();
-    const row = (try reader.next(&diagnostics)).?;
-    try std.testing.expectEqualDeep(
-        &[_]Value{ .{ .text = "1" }, .{ .text = "2" } },
-        row.values,
-    );
-}
-
-test "nextRow" {
+test "rowReaders reads every row" {
     const Case = struct {
         name: []const u8,
         data: []const u8,
@@ -584,37 +555,153 @@ test "nextRow" {
 
         try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = case.data });
 
-        var reader = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
-        defer reader.close();
+        var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
+        defer csv.close();
+        var diagnostics: Diagnostics = .{};
+        const row_reader = (try csv.reader().rowReaders(1, &diagnostics))[0];
 
         for (case.expected_rows) |expected| {
-            const row = (try reader.nextRow()).?;
-            try std.testing.expectEqual(expected.len, row.values.len);
-            for (expected, row.values) |expected_value, value| {
-                try std.testing.expectEqualDeep(expected_value, value);
-            }
+            const row = (try row_reader.next(&diagnostics)).?;
+            try std.testing.expectEqualDeep(expected, row.values);
         }
-        try std.testing.expect(try reader.nextRow() == null);
+        try std.testing.expectEqual(null, try row_reader.next(&diagnostics));
 
-        try std.testing.expectEqual(case.expected_names.len, reader.names.items.len);
-        for (case.expected_names, reader.names.items) |expected, name| {
+        try std.testing.expectEqual(case.expected_names.len, csv.names.items.len);
+        for (case.expected_names, csv.names.items) |expected, name| {
             try std.testing.expectEqualStrings(expected, name);
         }
     }
 }
 
-test "nextRow fails on a wrong number of values" {
+test "rowReaders cuts on whole rows" {
+    const Case = struct {
+        name: []const u8,
+        data: []const u8,
+        count: usize,
+        /// The first value of each row, row reader by row reader.
+        expected_parts: []const []const []const u8,
+        /// The line of the first row of each row reader, 0 when it has none.
+        expected_lines: []const u64,
+    };
+
+    const cases = [_]Case{
+        .{
+            .name = "ok_one_part",
+            .data = "a\n1\n2\n",
+            .count = 1,
+            .expected_parts = &.{&.{ "1", "2" }},
+            .expected_lines = &.{2},
+        },
+        .{
+            .name = "ok_parts_of_same_size",
+            .data = "a\n1\n2\n3\n4\n",
+            .count = 2,
+            .expected_parts = &.{ &.{ "1", "2" }, &.{ "3", "4" } },
+            .expected_lines = &.{ 2, 4 },
+        },
+        .{
+            .name = "ok_line_end_in_quotes_stays_in_its_row",
+            .data = "a\n\"x\ny\"\n2\n",
+            .count = 2,
+            .expected_parts = &.{ &.{"x\ny"}, &.{"2"} },
+            .expected_lines = &.{ 2, 4 },
+        },
+        .{
+            .name = "ok_escaped_quotes_keep_the_count_even",
+            .data = "a\n\"x\"\"\"\n2\n3\n",
+            .count = 2,
+            .expected_parts = &.{ &.{"x\""}, &.{ "2", "3" } },
+            .expected_lines = &.{ 2, 3 },
+        },
+        .{
+            .name = "ok_fewer_rows_than_parts",
+            .data = "a\n1\n",
+            .count = 4,
+            .expected_parts = &.{&.{"1"}},
+            .expected_lines = &.{2},
+        },
+        .{
+            .name = "ok_without_final_line_end",
+            .data = "a\n1\n2\n3",
+            .count = 2,
+            .expected_parts = &.{ &.{"1"}, &.{ "2", "3" } },
+            .expected_lines = &.{ 2, 3 },
+        },
+        .{
+            .name = "ok_header_only",
+            .data = "a\n",
+            .count = 3,
+            .expected_parts = &.{&.{}},
+            .expected_lines = &.{0},
+        },
+        .{
+            .name = "ok_empty_file",
+            .data = "",
+            .count = 2,
+            .expected_parts = &.{&.{}},
+            .expected_lines = &.{0},
+        },
+    };
+
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = "a,b\n1,2\n1,2,3\n" });
 
-    var reader = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
-    defer reader.close();
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
 
-    _ = try reader.nextRow();
-    try std.testing.expectError(error.ColumnCountMismatch, reader.nextRow());
-    try std.testing.expectEqual(3, reader.line);
+        try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = case.data });
+
+        var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
+        defer csv.close();
+        var diagnostics: Diagnostics = .{};
+
+        const row_readers = try csv.reader().rowReaders(case.count, &diagnostics);
+
+        try std.testing.expectEqual(case.expected_parts.len, row_readers.len);
+        for (
+            row_readers,
+            case.expected_parts,
+            case.expected_lines,
+            csv.csv_row_readers,
+        ) |row_reader, expected_rows, expected_line, csv_row_reader| {
+            for (expected_rows, 0..) |expected, index| {
+                const row = (try row_reader.next(&diagnostics)).?;
+                try std.testing.expectEqualStrings(expected, row.values[0].text);
+                if (index == 0) try std.testing.expectEqual(
+                    expected_line,
+                    csv_row_reader.line,
+                );
+            }
+            try std.testing.expectEqual(null, try row_reader.next(&diagnostics));
+        }
+    }
+}
+
+test "rowReaders again reads the rows again" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "table.csv", .data = "a\n1\n2\n" });
+
+    var csv = CsvReader.new(io, std.testing.allocator, tmp.dir, "table.csv");
+    defer csv.close();
+    var diagnostics: Diagnostics = .{};
+
+    const first = (try csv.reader().rowReaders(1, &diagnostics))[0];
+    _ = try first.next(&diagnostics);
+    _ = try first.next(&diagnostics);
+
+    const row_readers = try csv.reader().rowReaders(2, &diagnostics);
+    try std.testing.expectEqual(2, row_readers.len);
+    try std.testing.expectEqualStrings(
+        "1",
+        (try row_readers[0].next(&diagnostics)).?.values[0].text,
+    );
+    try std.testing.expectEqualStrings(
+        "2",
+        (try row_readers[1].next(&diagnostics)).?.values[0].text,
+    );
 }
 
 test "failures are translated with their location" {
@@ -682,9 +769,12 @@ test "failures are translated with their location" {
         defer csv.close();
         var diagnostics: Diagnostics = .{};
 
-        const result = while (true) {
-            const row = csv.reader().next(&diagnostics) catch |err| break err;
-            if (row == null) return error.TestExpectedError;
+        const result = blk: {
+            const row_readers = csv.reader().rowReaders(1, &diagnostics) catch |err| break :blk err;
+            while (true) {
+                const row = row_readers[0].next(&diagnostics) catch |err| break :blk err;
+                if (row == null) return error.TestExpectedError;
+            }
         };
 
         try std.testing.expectEqual(case.expected_error, result);
