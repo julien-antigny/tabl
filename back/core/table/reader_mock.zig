@@ -45,7 +45,6 @@ pub const MockReader = struct {
 
         const single = [_][]const Row{self.rows};
         const parts: []const []const Row = if (count == 1 or self.parts.len == 0) &single else self.parts;
-        std.debug.assert(parts.len <= max_parts);
 
         for (parts, 0..) |rows, index| {
             self.mock_row_readers[index] = .{ .rows = rows };

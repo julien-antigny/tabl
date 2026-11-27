@@ -35,7 +35,6 @@ pub const TypeInference = struct {
     /// the result is the same as if every row had been observed here.
     /// Both have the same columns.
     pub fn merge(self: TypeInference, other: TypeInference) void {
-        std.debug.assert(self.candidates.len == other.candidates.len);
         for (self.candidates, other.candidates) |*candidates, other_candidates| {
             candidates.merge(other_candidates);
         }

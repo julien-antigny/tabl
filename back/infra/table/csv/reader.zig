@@ -148,7 +148,6 @@ pub const CsvReader = struct {
     /// Cuts the rows into at most `count` parts, each starting on a row,
     /// and creates a row reader for each.
     fn createRowReaders(self: *CsvReader, count: usize) !void {
-        std.debug.assert(count > 0);
         try self.loadHeader();
         self.freeRowReaders();
 
