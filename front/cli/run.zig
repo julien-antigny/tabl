@@ -49,11 +49,14 @@ pub fn import(
     );
     defer cache.close();
 
+    var options = command.options;
+    options.threads = std.Thread.getCpuCount() catch 1;
+
     const summary = try tabl.Import.new(
         csv.reader(),
         cache.writer(),
-        command.options,
-    ).run(init.gpa, diagnostics);
+        options,
+    ).run(init.io, init.gpa, diagnostics);
     try out.print("{d} rows, {d} columns imported into {s}\n", .{
         summary.rows,
         summary.columns,

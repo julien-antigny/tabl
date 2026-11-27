@@ -4,6 +4,7 @@ const max_message_len = @import("../../core/diagnostic.zig").max_message_len;
 const Row = @import("../../core/table/row.zig").Row;
 const Value = @import("../../core/table/value.zig").Value;
 const Reader = @import("../../core/table/reader.zig").Reader;
+const RowReader = @import("../../core/table/row_reader.zig").RowReader;
 const Writer = @import("../../core/table/writer.zig").Writer;
 const MockReader = @import("../../core/table/reader_mock.zig").MockReader;
 const MockWriter = @import("../../core/table/writer_mock.zig").MockWriter;
@@ -27,6 +28,9 @@ pub const ImportOptions = struct {
     /// How many rows the types are inferred from: null reads every row.
     /// A value after the sample that does not fit its type stops the import.
     sample_rows: ?u64 = null,
+    /// How many threads infer the types, each on its own part of the rows.
+    /// With a sample, a single thread reads it.
+    threads: usize = 1,
 };
 
 pub const Import = struct {
@@ -40,16 +44,19 @@ pub const Import = struct {
 
     /// Reads the source twice: once to infer the type of each column,
     /// then again to write every row with its values converted.
+    /// `io` runs the threads of the inference: `allocator` must be thread-safe.
     pub fn run(
         self: Import,
+        io: std.Io,
         allocator: std.mem.Allocator,
         diagnostics: *Diagnostics,
     ) ImportError!Summary {
-        return self.importTable(allocator, diagnostics) catch |err| fail(err, diagnostics);
+        return self.importTable(io, allocator, diagnostics) catch |err| fail(err, diagnostics);
     }
 
     fn importTable(
         self: Import,
+        io: std.Io,
         allocator: std.mem.Allocator,
         diagnostics: *Diagnostics,
     ) ImportError!Summary {
@@ -57,7 +64,7 @@ pub const Import = struct {
 
         const types = try allocator.alloc(ColumnType, header.names.len);
         defer allocator.free(types);
-        try self.inferTypes(allocator, types, diagnostics);
+        try self.inferTypes(io, allocator, types, diagnostics);
 
         try self.writer.header(header, types, diagnostics);
         const rows = try self.copyRows(allocator, header, types, diagnostics);
@@ -66,25 +73,56 @@ pub const Import = struct {
         return .{ .rows = rows, .columns = header.names.len };
     }
 
+    /// Runs one task per row reader, then merges what each has observed.
     fn inferTypes(
         self: Import,
+        io: std.Io,
         allocator: std.mem.Allocator,
         types: []ColumnType,
         diagnostics: *Diagnostics,
-    ) TableError!void {
-        const candidates = try allocator.alloc(Candidates, types.len);
+    ) ImportError!void {
+        const count = if (self.options.sample_rows == null) self.options.threads else 1;
+        const row_readers = try self.reader.rowReaders(count, diagnostics);
+
+        // Each task writes its candidates on every row: they start on their
+        // own cache line, so that two cores never write to the same one.
+        const columns = types.len;
+        const stride = std.mem.alignForward(usize, columns, std.atomic.cache_line);
+        const candidates = try allocator.alignedAlloc(
+            Candidates,
+            .fromByteUnits(std.atomic.cache_line),
+            row_readers.len * stride,
+        );
         defer allocator.free(candidates);
         @memset(candidates, .{});
 
-        const inference: TypeInference = .new(candidates, self.options.decimal_mark);
-        const row_reader = (try self.reader.rowReaders(1, diagnostics))[0];
-        const sample_rows = self.options.sample_rows orelse std.math.maxInt(u64);
-        var rows: u64 = 0;
-        while (rows < sample_rows) : (rows += 1) {
-            const row = try row_reader.next(diagnostics) orelse break;
-            inference.observe(row.values);
+        const tasks = try allocator.alloc(InferTask, row_readers.len);
+        defer allocator.free(tasks);
+        for (tasks, row_readers, 0..) |*task, row_reader, index| {
+            task.* = .{
+                .row_reader = row_reader,
+                .inference = .new(candidates[index * stride ..][0..columns], self.options.decimal_mark),
+                .sample_rows = self.options.sample_rows orelse std.math.maxInt(u64),
+            };
         }
-        inference.result(types);
+
+        var group: std.Io.Group = .init;
+        for (tasks) |*task| {
+            group.async(io, InferTask.run, .{task});
+        }
+        try group.await(io);
+
+        for (tasks) |*task| {
+            if (task.failure) |failure| {
+                diagnostics.append(&task.diagnostics);
+                return failure;
+            }
+        }
+
+        for (tasks[1..]) |task| {
+            tasks[0].inference.merge(task.inference);
+        }
+        tasks[0].inference.result(types);
     }
 
     fn copyRows(
@@ -108,6 +146,27 @@ pub const Import = struct {
             rows += 1;
         }
         return rows;
+    }
+};
+
+/// One part of the inference, run on its own thread:
+/// it only touches its own fields.
+const InferTask = struct {
+    row_reader: RowReader align(std.atomic.cache_line),
+    inference: TypeInference,
+    sample_rows: u64,
+    diagnostics: Diagnostics = .{},
+    failure: ?TableError = null,
+
+    fn run(self: *InferTask) void {
+        var rows: u64 = 0;
+        while (rows < self.sample_rows) : (rows += 1) {
+            const row = self.row_reader.next(&self.diagnostics) catch |err| {
+                self.failure = err;
+                return;
+            } orelse return;
+            self.inference.observe(row.values);
+        }
     }
 };
 
@@ -156,7 +215,7 @@ test "run copies every row" {
     defer writer.deinit();
     var diagnostics: Diagnostics = .{};
 
-    const summary = try Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.allocator, &diagnostics);
+    const summary = try Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.io, std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqual(Summary{ .rows = 2, .columns = 2 }, summary);
     try std.testing.expectEqual(0, diagnostics.size);
@@ -179,7 +238,7 @@ test "run converts the values to the inferred types" {
     defer writer.deinit();
     var diagnostics: Diagnostics = .{};
 
-    _ = try Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.allocator, &diagnostics);
+    _ = try Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.io, std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqualDeep(
         &[_]ColumnType{ .integer, .text, .{ .date = .day_month_year_slash } },
@@ -207,7 +266,7 @@ test "run reads decimals with a comma" {
     defer writer.deinit();
     var diagnostics: Diagnostics = .{};
 
-    _ = try Import.new(reader.reader(), writer.writer(), .{ .decimal_mark = .comma }).run(std.testing.allocator, &diagnostics);
+    _ = try Import.new(reader.reader(), writer.writer(), .{ .decimal_mark = .comma }).run(std.testing.io, std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqualDeep(&[_]ColumnType{ .decimal, .text }, writer.types);
     try std.testing.expectEqualDeep(
@@ -233,7 +292,7 @@ test "run infers the types from the sample only" {
     var diagnostics: Diagnostics = .{};
 
     const summary = try Import.new(reader.reader(), writer.writer(), .{ .sample_rows = 1 })
-        .run(std.testing.allocator, &diagnostics);
+        .run(std.testing.io, std.testing.allocator, &diagnostics);
 
     try std.testing.expectEqual(2, summary.rows);
     try std.testing.expectEqualDeep(&[_]ColumnType{ .integer, .text }, writer.types);
@@ -258,7 +317,7 @@ test "run stops on a value that does not fit the sample" {
     try std.testing.expectError(
         error.TypeMismatch,
         Import.new(reader.reader(), writer.writer(), .{ .sample_rows = 1 })
-            .run(std.testing.allocator, &diagnostics),
+            .run(std.testing.io, std.testing.allocator, &diagnostics),
     );
 
     try std.testing.expect(!writer.finished);
@@ -270,6 +329,57 @@ test "run stops on a value that does not fit the sample" {
         "row 2, column \"age\": \"N/A\" is not of type integer, inferred from the sample",
         cause.message,
     );
+}
+
+test "run infers the types on every part" {
+    const rows = [_]Row{
+        .{ .values = &.{.{ .text = "1" }} },
+        .{ .values = &.{.{ .text = "2.5" }} },
+        .{ .values = &.{.{ .text = "3" }} },
+    };
+    var reader: MockReader = .{
+        .names = &.{"price"},
+        .rows = &rows,
+        .parts = &.{ rows[0..1], rows[1..] },
+    };
+    var writer: MockWriter = .new(std.testing.allocator);
+    defer writer.deinit();
+    var diagnostics: Diagnostics = .{};
+
+    _ = try Import.new(reader.reader(), writer.writer(), .{ .threads = 2 })
+        .run(std.testing.io, std.testing.allocator, &diagnostics);
+
+    try std.testing.expectEqualDeep(&[_]ColumnType{.decimal}, writer.types);
+    try std.testing.expectEqual(3, writer.rows.items.len);
+    try std.testing.expectEqualDeep(&[_]Value{.{ .decimal = 1 }}, writer.rows.items[0]);
+}
+
+test "run reports the failure of a part" {
+    const rows = [_]Row{
+        .{ .values = &.{.{ .text = "a" }} },
+        .{ .values = &.{.{ .text = "b" }} },
+    };
+    var reader: MockReader = .{
+        .names = &.{"name"},
+        .rows = &rows,
+        .parts = &.{ rows[0..1], rows[1..] },
+        .failure = error.Malformed,
+    };
+    var writer: MockWriter = .new(std.testing.allocator);
+    defer writer.deinit();
+    var diagnostics: Diagnostics = .{};
+
+    try std.testing.expectError(
+        error.Malformed,
+        Import.new(reader.reader(), writer.writer(), .{ .threads = 2 })
+            .run(std.testing.io, std.testing.allocator, &diagnostics),
+    );
+
+    try std.testing.expectEqual(0, writer.rows.items.len);
+    try std.testing.expectEqual(2, diagnostics.size);
+    const latest = diagnostics.last().?;
+    try std.testing.expectEqual(.app, latest.layer);
+    try std.testing.expectEqualStrings("mock failure", latest.cause.?.message);
 }
 
 test "run stops on a failure and does not finish" {
@@ -327,7 +437,7 @@ test "run stops on a failure and does not finish" {
 
         try std.testing.expectError(
             case.expected,
-            Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.allocator, &diagnostics),
+            Import.new(reader.reader(), writer.writer(), .{}).run(std.testing.io, std.testing.allocator, &diagnostics),
         );
 
         try std.testing.expect(!writer.finished);

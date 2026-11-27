@@ -31,6 +31,15 @@ pub const TypeInference = struct {
         }
     }
 
+    /// Adds what `other` has observed, on another part of the same rows:
+    /// the result is the same as if every row had been observed here.
+    /// Both have the same columns.
+    pub fn merge(self: TypeInference, other: TypeInference) void {
+        for (self.candidates, other.candidates) |*candidates, other_candidates| {
+            candidates.merge(other_candidates);
+        }
+    }
+
     /// Writes the type chosen for each column into `types`,
     /// which must have one entry per column.
     pub fn result(self: TypeInference, types: []ColumnType) void {
@@ -82,6 +91,16 @@ pub const Candidates = struct {
         if (self.date_formats.count() == 0) {
             self.types.remove(.date);
         }
+    }
+
+    /// A type or a date format stays possible only if both allow it.
+    fn merge(self: *Candidates, other: Candidates) void {
+        self.types = self.types.intersectWith(other.types);
+        self.date_formats = self.date_formats.intersectWith(other.date_formats);
+        if (self.date_formats.count() == 0) {
+            self.types.remove(.date);
+        }
+        self.seen = self.seen or other.seen;
     }
 
     fn result(self: Candidates) ColumnType {
@@ -304,6 +323,134 @@ test "observe" {
 
         try std.testing.expectEqualDeep(case.expected, &candidates);
     }
+}
+
+test "merge" {
+    const Case = struct {
+        name: []const u8,
+        first: Candidates,
+        second: Candidates,
+        expected: Candidates,
+    };
+
+    const cases = [_]Case{
+        .{
+            .name = "ok_types_of_both",
+            .first = .{
+                .types = .initMany(&.{ .integer, .decimal, .text }),
+                .date_formats = .empty,
+                .seen = true,
+            },
+            .second = .{
+                .types = .initMany(&.{ .decimal, .text }),
+                .date_formats = .empty,
+                .seen = true,
+            },
+            .expected = .{
+                .types = .initMany(&.{ .decimal, .text }),
+                .date_formats = .empty,
+                .seen = true,
+            },
+        },
+        .{
+            .name = "ok_nothing_seen_changes_nothing",
+            .first = .{
+                .types = .initMany(&.{ .boolean, .text }),
+                .date_formats = .empty,
+                .seen = true,
+            },
+            .second = .{},
+            .expected = .{
+                .types = .initMany(&.{ .boolean, .text }),
+                .date_formats = .empty,
+                .seen = true,
+            },
+        },
+        .{
+            .name = "ok_seen_on_one_side",
+            .first = .{},
+            .second = .{
+                .types = .initOne(.text),
+                .date_formats = .empty,
+                .seen = true,
+            },
+            .expected = .{
+                .types = .initOne(.text),
+                .date_formats = .empty,
+                .seen = true,
+            },
+        },
+        .{
+            .name = "ok_common_date_format",
+            .first = .{
+                .types = .initMany(&.{ .date, .text }),
+                .date_formats = .initMany(&.{ .day_month_year_slash, .month_day_year_slash }),
+                .seen = true,
+            },
+            .second = .{
+                .types = .initMany(&.{ .date, .text }),
+                .date_formats = .initOne(.month_day_year_slash),
+                .seen = true,
+            },
+            .expected = .{
+                .types = .initMany(&.{ .date, .text }),
+                .date_formats = .initOne(.month_day_year_slash),
+                .seen = true,
+            },
+        },
+        .{
+            .name = "ok_no_common_date_format_removes_date",
+            .first = .{
+                .types = .initMany(&.{ .date, .text }),
+                .date_formats = .initOne(.day_month_year_slash),
+                .seen = true,
+            },
+            .second = .{
+                .types = .initMany(&.{ .date, .text }),
+                .date_formats = .initOne(.month_day_year_slash),
+                .seen = true,
+            },
+            .expected = .{
+                .types = .initOne(.text),
+                .date_formats = .empty,
+                .seen = true,
+            },
+        },
+    };
+
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+
+        var first = [_]Candidates{case.first};
+        var second = [_]Candidates{case.second};
+        const inference: TypeInference = .new(&first, .point);
+        inference.merge(.new(&second, .point));
+
+        try std.testing.expectEqualDeep(case.expected, first[0]);
+    }
+}
+
+test "merge gives the same result as observing every row" {
+    const rows = [_][]const Value{
+        &.{ .{ .text = "1" }, .{ .text = "15/03/2024" }, .empty },
+        &.{ .{ .text = "2.5" }, .{ .text = "03/04/2024" }, .empty },
+        &.{ .{ .text = "3" }, .{ .text = "01/02/2024" }, .{ .text = "true" } },
+    };
+
+    var all = [_]Candidates{ .{}, .{}, .{} };
+    const all_rows: TypeInference = .new(&all, .point);
+    for (rows) |row| all_rows.observe(row);
+
+    var first = [_]Candidates{ .{}, .{}, .{} };
+    var second = [_]Candidates{ .{}, .{}, .{} };
+    const first_part: TypeInference = .new(&first, .point);
+    const second_part: TypeInference = .new(&second, .point);
+    first_part.observe(rows[0]);
+    second_part.observe(rows[1]);
+    second_part.observe(rows[2]);
+    first_part.merge(second_part);
+
+    try std.testing.expectEqualDeep(all, first);
 }
 
 test "result" {

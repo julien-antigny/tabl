@@ -148,7 +148,6 @@ pub const CsvReader = struct {
     /// Cuts the rows into at most `count` parts, each starting on a row,
     /// and creates a row reader for each.
     fn createRowReaders(self: *CsvReader, count: usize) !void {
-        std.debug.assert(count > 0);
         try self.loadHeader();
         self.freeRowReaders();
 
@@ -229,8 +228,8 @@ const RowStart = struct {
 /// same size, `first` being the first row. Returns how many were found.
 ///
 /// A position is inside quotes when an odd number of `"` comes before it,
-/// from `first` which is outside: the `"` and `\n` of each part are counted
-/// in a single loop, then a part starts after the next `\n` outside quotes.
+/// from `first` which is outside: the `"` and `\n` of each part are counted,
+/// then a part starts after the next `\n` outside quotes.
 fn rowStarts(bytes: []const u8, first: RowStart, starts: []RowStart) usize {
     starts[0] = first;
     var found: usize = 1;
@@ -244,14 +243,9 @@ fn rowStarts(bytes: []const u8, first: RowStart, starts: []RowStart) usize {
 
         // Counted up to the byte before the target: when that byte ends a row,
         // the part starts right on the target.
-        var quotes: usize = 0;
-        var line_ends: u64 = 0;
-        for (bytes[position .. target - 1]) |byte| {
-            quotes += @intFromBool(byte == '"');
-            line_ends += @intFromBool(byte == '\n');
-        }
-        var in_quotes = quotes % 2 == 1;
-        line += line_ends;
+        const counts = countQuotesAndLineEnds(bytes[position .. target - 1]);
+        var in_quotes = counts.quotes % 2 == 1;
+        line += counts.line_ends;
         position = target - 1;
 
         while (position < bytes.len) : (position += 1) {
@@ -273,11 +267,75 @@ fn rowStarts(bytes: []const u8, first: RowStart, starts: []RowStart) usize {
     return found;
 }
 
+const Counts = struct {
+    quotes: usize,
+    line_ends: u64,
+};
+
+/// Counts the `"` and the `\n`, 64 bytes at a time: each comparison gives a
+/// 64-bit mask, one bit per byte, whose set bits are counted at once.
+fn countQuotesAndLineEnds(bytes: []const u8) Counts {
+    const width = 64;
+    const Block = @Vector(width, u8);
+    var counts: Counts = .{ .quotes = 0, .line_ends = 0 };
+
+    var index: usize = 0;
+    while (index + width <= bytes.len) : (index += width) {
+        const block: Block = bytes[index..][0..width].*;
+        const quotes: u64 = @bitCast(block == @as(Block, @splat('"')));
+        const line_ends: u64 = @bitCast(block == @as(Block, @splat('\n')));
+        counts.quotes += @popCount(quotes);
+        counts.line_ends += @popCount(line_ends);
+    }
+
+    for (bytes[index..]) |byte| {
+        counts.quotes += @intFromBool(byte == '"');
+        counts.line_ends += @intFromBool(byte == '\n');
+    }
+    return counts;
+}
+
 fn withoutBom(bytes: []const u8) []const u8 {
     if (std.mem.startsWith(u8, bytes, bom)) {
         return bytes[bom.len..];
     }
     return bytes;
+}
+
+test "countQuotesAndLineEnds" {
+    const Case = struct {
+        name: []const u8,
+        bytes: []const u8,
+        expected: Counts,
+    };
+
+    const cases = [_]Case{
+        .{
+            .name = "ok_empty",
+            .bytes = "",
+            .expected = .{ .quotes = 0, .line_ends = 0 },
+        },
+        .{
+            .name = "ok_shorter_than_a_block",
+            .bytes = "a,\"b\"\n",
+            .expected = .{ .quotes = 2, .line_ends = 1 },
+        },
+        .{
+            .name = "ok_exactly_one_block",
+            .bytes = "a,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\n" ++ "1234567890123456",
+            .expected = .{ .quotes = 16, .line_ends = 8 },
+        },
+        .{
+            .name = "ok_blocks_and_a_rest",
+            .bytes = "a,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\na,\"b\"\n",
+            .expected = .{ .quotes = 40, .line_ends = 20 },
+        },
+    };
+
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+        try std.testing.expectEqual(case.expected, countQuotesAndLineEnds(case.bytes));
+    }
 }
 
 test "withoutBom" {

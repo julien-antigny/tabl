@@ -54,6 +54,20 @@ pub const Diagnostics = struct {
         self.size += 1;
     }
 
+    /// Pushes every entry of `other`, oldest first: useful when `other` was
+    /// filled on another thread. An entry caused by the one before it is
+    /// still caused by it once copied.
+    pub fn append(self: *Diagnostics, other: *const Diagnostics) void {
+        for (other.entries[0..other.size], 0..) |entry, index| {
+            var copy = entry;
+            if (entry.cause) |cause| {
+                std.debug.assert(index > 0 and cause == &other.entries[index - 1]);
+                copy.cause = self.last();
+            }
+            self.push(copy);
+        }
+    }
+
     pub fn last(self: *const Diagnostics) ?*const ErrorDiagnostic {
         if (self.size == 0) {
             return null;
@@ -142,4 +156,22 @@ test "push keeps the first entries when the stack is full" {
     }
 
     try std.testing.expectEqual(max_entries, diagnostics.size);
+}
+
+test "append copies the entries and keeps the cause chain" {
+    var other: Diagnostics = .{};
+    other.push(.{ .layer = .infra, .kind = error.FileNotFound, .message = "file not found", .location = .{ .path = "a.csv", .line = 3 } });
+    other.push(.{ .layer = .app, .kind = error.NotFound, .message = "cannot read", .cause = other.last() });
+
+    var diagnostics: Diagnostics = .{};
+    diagnostics.push(.{ .layer = .core, .kind = error.Unreadable, .message = "before" });
+    diagnostics.append(&other);
+
+    try std.testing.expectEqual(3, diagnostics.size);
+    const latest = diagnostics.last().?;
+    try std.testing.expectEqualStrings("cannot read", latest.message);
+    try std.testing.expectEqual(&diagnostics.entries[1], latest.cause.?);
+    try std.testing.expectEqualStrings("file not found", latest.cause.?.message);
+    try std.testing.expectEqualStrings("a.csv", latest.cause.?.location.?.path);
+    try std.testing.expectEqual(null, diagnostics.entries[1].cause);
 }
